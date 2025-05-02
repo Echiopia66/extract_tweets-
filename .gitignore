@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+.env
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ログ・キャッシュ・一時ファイル
+*.log
+*.tmp
+
+# 画像・動画保存先
+images/
+videos/
+
+# 認証・セッション・個人情報
+twitter_cookies.json
+accounts.json
+
+# 設定ファイル（必要に応じて）
+config.json
+
+# その他
+*.sqlite3
+
+*.html
