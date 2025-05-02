@@ -12,6 +12,7 @@
 - Notionデータベースへの自動登録
 - 広告・引用RT・リプライ等の除外ロジック
 - 投稿ID重複・既登録チェック
+- インプレッション数・リポスト数・いいね数・ブックマーク数・リプライ数の自動取得
 - `.gitignore`/セッション管理/エラー耐性強化済み
 
 ---
@@ -77,6 +78,24 @@ python3 scrape_and_save_tweets.py --config config.json --account accounts.json
 | `keyword_trend`     | キーワードで話題欄検索→name/bioでフィルタして保存                     |
 
 > `filter_keywords_name_bio`, `filter_keywords_tweet` は `search_*` モードで利用
+
+---
+
+## 📝 Notion登録される主な項目
+
+- 投稿ID
+- 本文
+- URL
+- 投稿日時
+- ステータス
+- インプレッション数
+- リポスト数
+- いいね数
+- ブックマーク数
+- リプライ数
+- 画像・動画パス
+
+Notion側でこれらのカラム（number型など）を作成しておいてください。
 
 ---
 

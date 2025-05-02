@@ -47,6 +47,7 @@ def login(driver, target=None):
         print("✅ Cookieセッション検出 → ログインスキップ")
         print("🌐 https://twitter.com にアクセスしてクッキー読み込み中…")
         driver.get("https://twitter.com/")
+        driver.delete_all_cookies()
         with open("twitter_cookies.json", "r") as f:
             cookies = json.load(f)
             for cookie in cookies:
@@ -317,6 +318,10 @@ def extract_thread_from_detail_page(driver, tweet_url):
         return []
 
     block = next(b for b in tweet_blocks if b["id"] == current_id)
+
+    # ★ここで親投稿から数値を取得
+    impressions, retweets, likes, bookmarks, replies = extract_metrics(block["article"])
+
     image_urls = [
         img.get_attribute("src")
         for img in block["article"].find_elements(
@@ -330,17 +335,20 @@ def extract_thread_from_detail_page(driver, tweet_url):
         if v.get_attribute("src")
     ]
 
-    return [
-        {
-            "url": tweet_url,
-            "id": current_id,
-            "text": block["text"],
-            "date": block["date"],
-            "images": image_urls,
-            "videos": video_urls,
-            "username": block["username"],
-        }
-    ]
+    return [{
+        "url": tweet_url,
+        "id": current_id,
+        "text": block["text"],
+        "date": block["date"],
+        "images": image_urls,
+        "videos": video_urls,
+        "username": block["username"],
+        "impressions": impressions,
+        "retweets": retweets,
+        "likes": likes,
+        "bookmarks": bookmarks,
+        "replies": replies,
+    }]
 
 def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
     tweets = []
@@ -384,6 +392,101 @@ def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
     print(f"\n📈 完了: {len(tweets)} 件の投稿を抽出（登録対象として）")
     return tweets
 
+def extract_metrics(article):
+    """
+    いいね数・リポスト数・インプレッション数・ブックマーク数・リプライ数を抽出
+    取得できないものは0（インプレッションのみNone）で返す
+    """
+    impressions = retweets = likes = bookmarks = replies = None
+    try:
+        divs = article.find_elements(By.XPATH, ".//div[contains(@aria-label, '件の表示')]")
+        for div in divs:
+            label = div.get_attribute("aria-label")
+            print(f"🟦 aria-label内容: {label}")
+
+            # 1. 返信ありパターン
+            m_reply = re.search(
+                r"(\d[\d,\.万]*) 件の返信、(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件のブックマーク、(\d[\d,\.万]*) 件の表示",
+                label or ""
+            )
+            if m_reply:
+                replies = m_reply.group(1)
+                retweets = m_reply.group(2)
+                likes = m_reply.group(3)
+                bookmarks = m_reply.group(4)
+                impressions = m_reply.group(5)
+                print(f"🟩 マッチ: 返信={replies}, RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}")
+                break
+
+            # 2. ブックマークありパターン（返信なし）
+            m = re.search(
+                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件のブックマーク、(\d[\d,\.万]*) 件の表示", label or ""
+            )
+            if m:
+                retweets = m.group(1)
+                likes = m.group(2)
+                bookmarks = m.group(3)
+                impressions = m.group(4)
+                print(f"🟩 マッチ: RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}")
+                break
+
+            # 3. ブックマークなしパターン
+            m2 = re.search(
+                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件の表示", label or ""
+            )
+            if m2:
+                retweets = m2.group(1)
+                likes = m2.group(2)
+                impressions = m2.group(3)
+                print(f"🟩 マッチ: RT={retweets}, いいね={likes}, 表示={impressions}")
+                break
+
+            # 4. インプレッションのみパターン
+            m3 = re.search(r"([\d,\.万]+) 件の表示", label or "")
+            if m3:
+                impressions = m3.group(1)
+                print(f"🟦 インプレッションのみ: 表示={impressions}")
+                # likes/retweets/bookmarks/repliesは0扱い
+                retweets = 0
+                likes = 0
+                bookmarks = 0
+                replies = 0
+                break
+
+        # 5. ボタンからブックマーク数を取得（aria-label例: "1 件のブックマーク。ブックマーク"）
+        if bookmarks is None:
+            try:
+                bm_btns = article.find_elements(By.XPATH, ".//button[@data-testid='bookmark']")
+                for btn in bm_btns:
+                    bm_label = btn.get_attribute("aria-label")
+                    m = re.search(r"(\d[\d,\.万]*) 件のブックマーク", bm_label or "")
+                    if m:
+                        bookmarks = m.group(1)
+                        print(f"🟦 ボタンからBM取得: {bookmarks}")
+                        break
+            except Exception as e:
+                print(f"⚠️ ブックマーク数抽出エラー: {e}")
+
+        def parse_num(s):
+            if not s:
+                return 0
+            s = s.replace(",", "")
+            if "万" in s:
+                return int(float(s.replace("万", "")) * 10000)
+            try:
+                return int(s)
+            except:
+                return 0
+
+        impressions = parse_num(impressions) if impressions is not None else None
+        retweets = parse_num(retweets)
+        likes = parse_num(likes)
+        bookmarks = parse_num(bookmarks)
+        replies = parse_num(replies)
+
+    except Exception as e:
+        print(f"⚠️ extract_metricsエラー: {e}")
+    return impressions, retweets, likes, bookmarks, replies
 
 def is_reply_structure(article, tweet_id=None, text="", has_media=False):
     try:
@@ -608,9 +711,7 @@ def upload_to_notion(tweet):
                 {
                     "type": "text",
                     "text": {
-                        "content": tweet[
-                            "text"
-                        ],  # 通常通り、変換なしでそのまま渡す（normalize_text などは通さない）
+                        "content": tweet["text"],
                         "link": None,
                     },
                     "annotations": {
@@ -626,10 +727,24 @@ def upload_to_notion(tweet):
         },
         "URL": {"url": tweet["url"]},
         "投稿日時": {
-            "date": {"start": tweet["date"]} if tweet["date"] else None  # ✅ここを追加
+            "date": {"start": tweet["date"]} if tweet["date"] else None
         },
-        # ✅ ステータス（select型）に「未回答」を初期セット
         "ステータス": {"select": {"name": "未回答"}},
+        "インプレッション数": {
+            "number": int(tweet["impressions"]) if tweet.get("impressions") is not None else None
+        },
+        "リポスト数": {
+            "number": int(tweet["retweets"]) if tweet.get("retweets") is not None else 0
+        },
+        "いいね数": {
+            "number": int(tweet["likes"]) if tweet.get("likes") is not None else 0
+        },
+        "ブックマーク数": {
+            "number": int(tweet["bookmarks"]) if tweet.get("bookmarks") is not None else 0
+        },
+         "リプライ数": {
+            "number": int(tweet["replies"]) if tweet.get("replies") is not None else 0
+        },
     }
 
     image_files = save_media(tweet["images"], "images")
