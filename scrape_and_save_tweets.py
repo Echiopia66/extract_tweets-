@@ -97,6 +97,7 @@ def setup_driver():
     options.add_argument("--disable-blink-features=AutomationControlled")
     return webdriver.Chrome(options=options)
 
+
 def extract_tweet_id(article):
     href_els = article.find_elements(By.XPATH, ".//a[contains(@href, '/status/')]")
     for el in href_els:
@@ -106,21 +107,29 @@ def extract_tweet_id(article):
             return m.group(1)
     return None
 
+
 def extract_self_replies(driver, username):
     replies = []
     # cellInnerDivごとに「もっと見つける」span/h2が出たらbreak
     cell_divs = driver.find_elements(By.XPATH, "//div[@data-testid='cellInnerDiv']")
+
     def get_transform_y(cell):
         style = cell.get_attribute("style") or ""
         m = re.search(r"translateY\(([\d\.]+)px\)", style)
         return float(m.group(1)) if m else 0
+
     cell_divs = sorted(cell_divs, key=get_transform_y)
 
     for cell in cell_divs:
         texts = []
         for tag in ["span", "h2"]:
             for el in cell.find_elements(By.XPATH, f".//{tag}"):
-                t = el.text.strip().replace('\u200b', '').replace('\n', '').replace(' ', '')
+                t = (
+                    el.text.strip()
+                    .replace("\u200b", "")
+                    .replace("\n", "")
+                    .replace(" ", "")
+                )
                 if t:
                     texts.append(t)
         if any("もっと見つける" in t for t in texts):
@@ -131,11 +140,16 @@ def extract_self_replies(driver, username):
 
         def is_quote_reply(article):
             # 「引用」や「Quote」などの文言や、引用構造を持つ要素を判定
-            quote_els = article.find_elements(By.XPATH, ".//*[contains(text(), '引用')] | .//*[contains(text(), 'Quote')]")
+            quote_els = article.find_elements(
+                By.XPATH,
+                ".//*[contains(text(), '引用')] | .//*[contains(text(), 'Quote')]",
+            )
             # 追加: 引用構造のdivやaria-labelも判定
-            quote_struct = article.find_elements(By.XPATH, ".//div[contains(@aria-label, '引用')]")
+            quote_struct = article.find_elements(
+                By.XPATH, ".//div[contains(@aria-label, '引用')]"
+            )
             return bool(quote_els or quote_struct)
-        
+
         for article in articles:
             try:
                 handle_el = article.find_element(
@@ -155,7 +169,7 @@ def extract_self_replies(driver, username):
                     By.XPATH, ".//div[@data-testid='tweetText']"
                 )
                 reply_text = text_el.text.strip() if text_el and text_el.text else ""
-                
+
                 tweet_id = extract_tweet_id(article)
 
                 if not tweet_id:
@@ -168,6 +182,7 @@ def extract_self_replies(driver, username):
                 print(f"⚠️ リプライ抽出エラー: {e}")
                 continue
     return replies
+
 
 def is_ad_post(text):
     lowered = text.lower()
@@ -212,7 +227,12 @@ def extract_thread_from_detail_page(driver, tweet_url):
         texts = []
         for tag in ["span", "h2"]:
             for el in cell.find_elements(By.XPATH, f".//{tag}"):
-                t = el.text.strip().replace('\u200b', '').replace('\n', '').replace(' ', '')
+                t = (
+                    el.text.strip()
+                    .replace("\u200b", "")
+                    .replace("\n", "")
+                    .replace(" ", "")
+                )
                 if t:
                     texts.append(t)
         if any("もっと見つける" in t for t in texts):
@@ -335,20 +355,23 @@ def extract_thread_from_detail_page(driver, tweet_url):
         if v.get_attribute("src")
     ]
 
-    return [{
-        "url": tweet_url,
-        "id": current_id,
-        "text": block["text"],
-        "date": block["date"],
-        "images": image_urls,
-        "videos": video_urls,
-        "username": block["username"],
-        "impressions": impressions,
-        "retweets": retweets,
-        "likes": likes,
-        "bookmarks": bookmarks,
-        "replies": replies,
-    }]
+    return [
+        {
+            "url": tweet_url,
+            "id": current_id,
+            "text": block["text"],
+            "date": block["date"],
+            "images": image_urls,
+            "videos": video_urls,
+            "username": block["username"],
+            "impressions": impressions,
+            "retweets": retweets,
+            "likes": likes,
+            "bookmarks": bookmarks,
+            "replies": replies,
+        }
+    ]
+
 
 def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
     tweets = []
@@ -392,6 +415,7 @@ def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
     print(f"\n📈 完了: {len(tweets)} 件の投稿を抽出（登録対象として）")
     return tweets
 
+
 def extract_metrics(article):
     """
     いいね数・リポスト数・インプレッション数・ブックマーク数・リプライ数を抽出
@@ -399,7 +423,9 @@ def extract_metrics(article):
     """
     impressions = retweets = likes = bookmarks = replies = None
     try:
-        divs = article.find_elements(By.XPATH, ".//div[contains(@aria-label, '件の表示')]")
+        divs = article.find_elements(
+            By.XPATH, ".//div[contains(@aria-label, '件の表示')]"
+        )
         for div in divs:
             label = div.get_attribute("aria-label")
             print(f"🟦 aria-label内容: {label}")
@@ -407,7 +433,7 @@ def extract_metrics(article):
             # 1. 返信ありパターン
             m_reply = re.search(
                 r"(\d[\d,\.万]*) 件の返信、(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件のブックマーク、(\d[\d,\.万]*) 件の表示",
-                label or ""
+                label or "",
             )
             if m_reply:
                 replies = m_reply.group(1)
@@ -415,24 +441,30 @@ def extract_metrics(article):
                 likes = m_reply.group(3)
                 bookmarks = m_reply.group(4)
                 impressions = m_reply.group(5)
-                print(f"🟩 マッチ: 返信={replies}, RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}")
+                print(
+                    f"🟩 マッチ: 返信={replies}, RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}"
+                )
                 break
 
             # 2. ブックマークありパターン（返信なし）
             m = re.search(
-                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件のブックマーク、(\d[\d,\.万]*) 件の表示", label or ""
+                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件のブックマーク、(\d[\d,\.万]*) 件の表示",
+                label or "",
             )
             if m:
                 retweets = m.group(1)
                 likes = m.group(2)
                 bookmarks = m.group(3)
                 impressions = m.group(4)
-                print(f"🟩 マッチ: RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}")
+                print(
+                    f"🟩 マッチ: RT={retweets}, いいね={likes}, BM={bookmarks}, 表示={impressions}"
+                )
                 break
 
             # 3. ブックマークなしパターン
             m2 = re.search(
-                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件の表示", label or ""
+                r"(\d[\d,\.万]*) 件のリポスト、(\d[\d,\.万]*) 件のいいね、(\d[\d,\.万]*) 件の表示",
+                label or "",
             )
             if m2:
                 retweets = m2.group(1)
@@ -456,7 +488,9 @@ def extract_metrics(article):
         # 5. ボタンからブックマーク数を取得（aria-label例: "1 件のブックマーク。ブックマーク"）
         if bookmarks is None:
             try:
-                bm_btns = article.find_elements(By.XPATH, ".//button[@data-testid='bookmark']")
+                bm_btns = article.find_elements(
+                    By.XPATH, ".//button[@data-testid='bookmark']"
+                )
                 for btn in bm_btns:
                     bm_label = btn.get_attribute("aria-label")
                     m = re.search(r"(\d[\d,\.万]*) 件のブックマーク", bm_label or "")
@@ -466,6 +500,22 @@ def extract_metrics(article):
                         break
             except Exception as e:
                 print(f"⚠️ ブックマーク数抽出エラー: {e}")
+
+        if replies is None or replies == 0:
+            try:
+                # replyボタンのaria-label例: "3 件の返信"
+                reply_btns = article.find_elements(
+                    By.XPATH, ".//div[@role='group']//button"
+                )
+                for btn in reply_btns:
+                    label = btn.get_attribute("aria-label")
+                    m = re.search(r"(\d[\d,\.万]*) 件の返信", label or "")
+                    if m:
+                        replies = m.group(1)
+                        print(f"🟦 ボタンからリプライ数取得: {replies}")
+                        break
+            except Exception as e:
+                print(f"⚠️ リプライ数抽出エラー: {e}")
 
         def parse_num(s):
             if not s:
@@ -487,6 +537,7 @@ def extract_metrics(article):
     except Exception as e:
         print(f"⚠️ extract_metricsエラー: {e}")
     return impressions, retweets, likes, bookmarks, replies
+
 
 def is_reply_structure(article, tweet_id=None, text="", has_media=False):
     try:
@@ -540,7 +591,8 @@ def is_reply_structure(article, tweet_id=None, text="", has_media=False):
     except Exception as e:
         print(f"⚠️ is_reply_structure: 判定エラー {id_display} → {e}")
         return False
-    
+
+
 def has_media_in_html(article_html):
     soup = BeautifulSoup(article_html, "html.parser")
     # 画像判定
@@ -554,6 +606,7 @@ def has_media_in_html(article_html):
     if soup.find("video"):
         return True
     return False
+
 
 def extract_tweets(driver, extract_target, max_tweets):
     print(f"\n✨ アクセス中: https://twitter.com/{extract_target}")
@@ -583,14 +636,15 @@ def extract_tweets(driver, extract_target, max_tweets):
                 print(f"🔎 [{i+1}/{len(articles)}] 投稿チェック中...")
 
                 # href取得を安全に
-                href_els = article.find_elements(By.XPATH, ".//a[contains(@href, '/status/')]")
+                href_els = article.find_elements(
+                    By.XPATH, ".//a[contains(@href, '/status/')]"
+                )
                 if not href_els:
                     print("⚠️ hrefが見つからないためスキップ")
                     continue
                 href = href_els[0].get_attribute("href")
                 tweet_url = href if href.startswith("http") else f"https://x.com{href}"
                 tweet_id = re.sub(r"\D", "", tweet_url.split("/")[-1])
-
 
                 if tweet_url in seen_urls:
                     print(f"🌀 既出URL(スキップ): {tweet_url}")
@@ -620,7 +674,7 @@ def extract_tweets(driver, extract_target, max_tweets):
                     article_html = article.get_attribute("outerHTML")
                     if has_media_in_html(article_html):
                         has_media = True
-                
+
                 if is_reply_structure(
                     article, tweet_id=tweet_id, text=text, has_media=has_media
                 ):
@@ -726,12 +780,14 @@ def upload_to_notion(tweet):
             ]
         },
         "URL": {"url": tweet["url"]},
-        "投稿日時": {
-            "date": {"start": tweet["date"]} if tweet["date"] else None
-        },
+        "投稿日時": {"date": {"start": tweet["date"]} if tweet["date"] else None},
         "ステータス": {"select": {"name": "未回答"}},
         "インプレッション数": {
-            "number": int(tweet["impressions"]) if tweet.get("impressions") is not None else None
+            "number": (
+                int(tweet["impressions"])
+                if tweet.get("impressions") is not None
+                else None
+            )
         },
         "リポスト数": {
             "number": int(tweet["retweets"]) if tweet.get("retweets") is not None else 0
@@ -740,9 +796,11 @@ def upload_to_notion(tweet):
             "number": int(tweet["likes"]) if tweet.get("likes") is not None else 0
         },
         "ブックマーク数": {
-            "number": int(tweet["bookmarks"]) if tweet.get("bookmarks") is not None else 0
+            "number": (
+                int(tweet["bookmarks"]) if tweet.get("bookmarks") is not None else 0
+            )
         },
-         "リプライ数": {
+        "リプライ数": {
             "number": int(tweet["replies"]) if tweet.get("replies") is not None else 0
         },
     }
