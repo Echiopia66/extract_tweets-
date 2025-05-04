@@ -1,10 +1,13 @@
 import os
 import re
+import cv2
 import time
 import json
 import argparse
 import traceback
 import requests
+import pytesseract
+from PIL import Image, ImageFilter
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -108,6 +111,34 @@ def extract_tweet_id(article):
     return None
 
 
+def ocr_image(image_path):
+    try:
+        img = Image.open(image_path)
+        # 前処理: グレースケール化 & リサイズ & シャープ化
+        img = img.convert("L")
+        img = img.resize((img.width * 2, img.height * 2))
+        img = img.filter(ImageFilter.SHARPEN)
+        # --- ここから追加: 二値化 ---
+        import numpy as np
+
+        img_np = np.array(img)
+        # Otsuのしきい値で二値化
+        import cv2
+
+        _, img_np = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        img = Image.fromarray(img_np)
+        # --- ここまで追加 ---
+        text = pytesseract.image_to_string(img, lang="jpn")
+        print(f"📝 OCR画像({image_path})結果:\n{text.strip()}")
+        # 文字化け判定: 文字数が少ない・記号が多い場合は警告
+        if not text.strip() or sum(c.isalnum() for c in text) < 3:
+            print(f"⚠️ OCR画像({image_path})で文字化けまたは認識失敗の可能性")
+        return text.strip()
+    except Exception as e:
+        print(f"OCR失敗({image_path}): {e}")
+        return "[OCRエラー]"
+
+
 def extract_self_replies(driver, username):
     replies = []
     # cellInnerDivごとに「もっと見つける」span/h2が出たらbreak
@@ -190,7 +221,7 @@ def is_ad_post(text):
 
 
 def extract_thread_from_detail_page(driver, tweet_url):
-    print(f"\n\U0001f575 投稿アクセス中: {tweet_url}")
+    print(f"\n🕵️ 投稿アクセス中: {tweet_url}")
     driver.get(tweet_url)
     time.sleep(3)
 
@@ -239,9 +270,8 @@ def extract_thread_from_detail_page(driver, tweet_url):
             print("🔝 もっと見つける以降の投稿を除外")
             break
 
-        # ★ break前のcellのarticlesをここで処理
         articles = cell.find_elements(By.XPATH, ".//article[@data-testid='tweet']")
-        for article in articles:
+        for i, article in enumerate(articles):
             try:
                 href_el = article.find_element(
                     By.XPATH, ".//a[contains(@href, '/status/')]"
@@ -249,6 +279,7 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 href = href_el.get_attribute("href")
                 match = re.search(r"/status/(\d{10,})", href)
                 tweet_id = match.group(1) if match else None
+                print(f"🔎 [{i+1}] article探索: href={href} → tweet_id={tweet_id}")
 
                 if not tweet_id:
                     print(f"🛑 tweet_id抽出失敗 → 除外: href={href}")
@@ -271,8 +302,22 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 images = article.find_elements(
                     By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
                 )
-                videos = article.find_elements(By.XPATH, ".//video")
-                has_media = bool(images or videos)
+                images_with_src = [img for img in images if img.get_attribute("src")]
+
+                video_srcs = [
+                    v.get_attribute("src")
+                    for v in article.find_elements(By.XPATH, ".//video")
+                    if v.get_attribute("src")
+                ]
+
+                has_video_tag = bool(article.find_elements(By.XPATH, ".//video"))
+                has_media = bool(images_with_src or video_srcs or has_video_tag)
+
+                if not has_media:
+                    for src in video_srcs:
+                        if src.startswith("blob:"):
+                            has_media = True
+                            break
 
                 if is_reply_structure(
                     article, tweet_id=tweet_id, text=text, has_media=has_media
@@ -339,21 +384,64 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     block = next(b for b in tweet_blocks if b["id"] == current_id)
 
-    # ★ここで親投稿から数値を取得
-    impressions, retweets, likes, bookmarks, replies = extract_metrics(block["article"])
+    # --- 親投稿のvideoタグだけを抽出（引用元のvideoを除外） ---
+    all_videos = block["article"].find_elements(By.XPATH, ".//video")
+    quote_articles = block["article"].find_elements(
+        By.XPATH, ".//article[@data-testid='tweet']"
+    )
+    quote_videos = []
+    for qa in quote_articles:
+        quote_videos.extend(qa.find_elements(By.XPATH, ".//video"))
+    parent_videos = [
+        v
+        for v in block["article"].find_elements(By.XPATH, ".//video")
+        # 直近のancestor articleが自分自身（block["article"]）のみ
+        if v.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
+        == block["article"]
+        and len(v.find_elements(By.XPATH, "ancestor::article[@data-testid='tweet']"))
+        == 1
+    ]
 
+    print(
+        f"🟦 スクショ対象articleのID: {block['id']} | videoタグ数: {len(parent_videos)}"
+    )
+    for idx, v in enumerate(parent_videos):
+        src = v.get_attribute("src")
+        poster = v.get_attribute("poster")
+        print(f"　└ parent_video[{idx}] src={src} poster={poster}")
+
+    poster_path = None
+    if parent_videos:
+        poster_url = parent_videos[0].get_attribute("poster")
+        if poster_url:
+            print(f"🟦 poster画像URL: {poster_url}")
+            # poster画像をダウンロードして保存
+            poster_path = f"video_poster_{current_id}.jpg"
+            try:
+                resp = requests.get(poster_url, stream=True)
+                with open(poster_path, "wb") as f:
+                    for chunk in resp.iter_content(1024):
+                        f.write(chunk)
+                print(f"🟩 poster画像保存: {poster_path}")
+            except Exception as e:
+                print(f"❌ poster画像保存失敗: {e}")
+    else:
+        print("🟥 poster属性付きvideoタグなし")
+
+    # 親投稿の画像だけを抽出
     image_urls = [
         img.get_attribute("src")
         for img in block["article"].find_elements(
             By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
         )
         if img.get_attribute("src")
+        and img.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
+        == block["article"]
+        and len(img.find_elements(By.XPATH, "ancestor::article[@data-testid='tweet']"))
+        == 1
     ]
-    video_urls = [
-        v.get_attribute("src")
-        for v in block["article"].find_elements(By.XPATH, ".//video")
-        if v.get_attribute("src")
-    ]
+
+    impressions, retweets, likes, bookmarks, replies = extract_metrics(block["article"])
 
     return [
         {
@@ -362,13 +450,14 @@ def extract_thread_from_detail_page(driver, tweet_url):
             "text": block["text"],
             "date": block["date"],
             "images": image_urls,
-            "videos": video_urls,
             "username": block["username"],
             "impressions": impressions,
             "retweets": retweets,
             "likes": likes,
             "bookmarks": bookmarks,
             "replies": replies,
+            "article": block["article"],
+            "video_poster": poster_path,
         }
     ]
 
@@ -485,27 +574,59 @@ def extract_metrics(article):
                 replies = 0
                 break
 
-        # 5. ボタンからブックマーク数を取得（aria-label例: "1 件のブックマーク。ブックマーク"）
+        # いいね
+        if likes is None:
+            try:
+                like_btns = article.find_elements(
+                    By.XPATH, ".//button[@data-testid='like']"
+                )
+                for btn in like_btns:
+                    label = btn.get_attribute("aria-label")
+                    m = re.search(r"(\d[\d,\.万]*) 件のいいね", label or "")
+                    if m:
+                        likes = m.group(1)
+                        print(f"🟦 ボタンからいいね数取得: {likes}")
+                        break
+            except Exception as e:
+                print(f"⚠️ いいね数抽出エラー: {e}")
+
+        # リポスト
+        if retweets is None:
+            try:
+                rt_btns = article.find_elements(
+                    By.XPATH, ".//button[@data-testid='retweet']"
+                )
+                for btn in rt_btns:
+                    label = btn.get_attribute("aria-label")
+                    m = re.search(r"(\d[\d,\.万]*) 件のリポスト", label or "")
+                    if m:
+                        retweets = m.group(1)
+                        print(f"🟦 ボタンからリポスト数取得: {retweets}")
+                        break
+            except Exception as e:
+                print(f"⚠️ リポスト数抽出エラー: {e}")
+
+        # ブックマーク
         if bookmarks is None:
             try:
                 bm_btns = article.find_elements(
                     By.XPATH, ".//button[@data-testid='bookmark']"
                 )
                 for btn in bm_btns:
-                    bm_label = btn.get_attribute("aria-label")
-                    m = re.search(r"(\d[\d,\.万]*) 件のブックマーク", bm_label or "")
+                    label = btn.get_attribute("aria-label")
+                    m = re.search(r"(\d[\d,\.万]*) 件のブックマーク", label or "")
                     if m:
                         bookmarks = m.group(1)
-                        print(f"🟦 ボタンからBM取得: {bookmarks}")
+                        print(f"🟦 ボタンからブックマーク数取得: {bookmarks}")
                         break
             except Exception as e:
                 print(f"⚠️ ブックマーク数抽出エラー: {e}")
 
-        if replies is None or replies == 0:
+        # リプライ
+        if replies is None:
             try:
-                # replyボタンのaria-label例: "3 件の返信"
                 reply_btns = article.find_elements(
-                    By.XPATH, ".//div[@role='group']//button"
+                    By.XPATH, ".//button[@data-testid='reply']"
                 )
                 for btn in reply_btns:
                     label = btn.get_attribute("aria-label")
@@ -721,24 +842,6 @@ def extract_tweets(driver, extract_target, max_tweets):
     return tweet_urls
 
 
-def save_media(media_urls, folder):
-    os.makedirs(folder, exist_ok=True)
-    saved_files = []
-    for i, url in enumerate(media_urls):
-        try:
-            response = requests.get(url, stream=True)
-            ext = ".mp4" if "video" in url else ".jpg"
-            filename = f"media_{i}{ext}"
-            filepath = os.path.join(folder, filename)
-            with open(filepath, "wb") as f:
-                shutil.copyfileobj(response.raw, f)
-            print(f"💾 メディア保存成功: {filepath}")
-            saved_files.append(filepath)
-        except Exception as e:
-            print("❌ メディア保存失敗:", e)
-    return saved_files
-
-
 def already_registered(tweet_id):
     if not tweet_id or not tweet_id.isdigit():
         return False
@@ -751,11 +854,48 @@ def already_registered(tweet_id):
         return False
 
 
+def ocr_and_remove_image(image_path, label=None):
+    """
+    画像パスを受け取りOCRし、使用後に削除する。
+    labelがあれば結果の先頭に付与。
+    """
+    result = ""
+    try:
+        ocr_result = ocr_image(image_path)
+        if ocr_result:
+            cleaned = clean_ocr_text(ocr_result)
+            result = f"[{label}]\n{cleaned}" if label else cleaned
+    except Exception as e:
+        print(f"⚠️ OCR失敗: {e}")
+    finally:
+        try:
+            os.remove(image_path)
+            print(f"🗑️ 画像削除: {image_path}")
+        except Exception as e:
+            print(f"⚠️ 画像削除失敗: {e}")
+    return result
+
+
+def clean_ocr_text(text):
+    # 除外したい文言やパターンをここに追加
+    EXCLUDE_PATTERNS = [
+        "朝質問を「いいね!」 する",
+        "この投稿をいいね！",
+        # 必要に応じて追加
+    ]
+    lines = text.splitlines()
+    cleaned = [
+        line for line in lines if not any(pat in line for pat in EXCLUDE_PATTERNS)
+    ]
+    return "\n".join(cleaned)
+
+
 def upload_to_notion(tweet):
     print(f"📤 Notion登録処理開始: {tweet['id']}")
     if already_registered(tweet["id"]):
         print(f"🚫 スキップ済: {tweet['id']}")
         return
+
     props = {
         "投稿ID": {
             "rich_text": [{"type": "text", "text": {"content": str(tweet["id"])}}]
@@ -803,44 +943,44 @@ def upload_to_notion(tweet):
         "リプライ数": {
             "number": int(tweet["replies"]) if tweet.get("replies") is not None else 0
         },
+        "文字起こし": {"rich_text": []},
     }
 
-    image_files = save_media(tweet["images"], "images")
-    video_files = save_media(tweet["videos"], "videos")
+    ocr_texts = []
+
+    # 画像ファイルのOCR（tweet["images"]）
+    for idx, img_url in enumerate(tweet.get("images", [])):
+        img_path = f"ocr_image_{tweet['id']}_{idx}.jpg"
+        try:
+            resp = requests.get(img_url, stream=True)
+            with open(img_path, "wb") as f:
+                for chunk in resp.iter_content(1024):
+                    f.write(chunk)
+            ocr_text = ocr_and_remove_image(img_path, label=f"画像{idx+1}")
+            if ocr_text:
+                ocr_texts.append(ocr_text)
+        except Exception as e:
+            print(f"⚠️ 画像ダウンロード失敗: {e}")
+
+    # poster画像のOCR
+    poster_path = tweet.get("video_poster")
+    if poster_path:
+        ocr_text = ocr_and_remove_image(poster_path, label="動画サムネイル")
+        if ocr_text:
+            ocr_texts.append(ocr_text)
+
+    if ocr_texts:
+        props["文字起こし"]["rich_text"] = [
+            {"type": "text", "text": {"content": "\n\n".join(ocr_texts)}}
+        ]
 
     children_blocks = []
-
-    # 画像ファイルをすべてfile blockとして追加
-    for path in image_files:
-        children_blocks.append(
-            {
-                "object": "block",
-                "type": "file",
-                "file": {
-                    "type": "external",
-                    "external": {"url": f"file://{os.path.abspath(path)}"},
-                },
-            }
-        )
-
-    # 動画ファイルも同様に追加
-    for path in video_files:
-        children_blocks.append(
-            {
-                "object": "block",
-                "type": "file",
-                "file": {
-                    "type": "external",
-                    "external": {"url": f"file://{os.path.abspath(path)}"},
-                },
-            }
-        )
 
     try:
         new_page = notion.pages.create(
             parent={"database_id": DATABASE_ID},
             properties=props,
-            children=children_blocks if children_blocks else [],
+            children=children_blocks,
         )
         print(f"📝 Notion登録完了: {tweet['url']}")
     except Exception as e:
@@ -1099,8 +1239,6 @@ def extract_from_search(driver, keywords, max_tweets, name_bio_keywords=None):
                             "text": text,
                             "date": date,
                             "id": tweet_id,
-                            "images": [],
-                            "videos": [],
                             "username": username,
                             "display_name": display_name,
                         }
@@ -1303,7 +1441,9 @@ def main():
 
     for i, tweet in enumerate(tweets, 1):
         print(f"\n🌀 {i}/{len(tweets)} 件目 処理中...")
-        print(json.dumps(tweet, ensure_ascii=False, indent=2))
+        tweet_for_print = tweet.copy()
+        tweet_for_print.pop("article", None)
+        print(json.dumps(tweet_for_print, ensure_ascii=False, indent=2))
         tweet = merge_replies_with_driver(driver, tweet)
         upload_to_notion(tweet)
 
