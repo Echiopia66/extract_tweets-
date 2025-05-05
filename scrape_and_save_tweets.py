@@ -7,7 +7,7 @@ import argparse
 import traceback
 import requests
 import pytesseract
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageEnhance
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -114,23 +114,18 @@ def extract_tweet_id(article):
 def ocr_image(image_path):
     try:
         img = Image.open(image_path)
-        # 前処理: グレースケール化 & リサイズ & シャープ化
         img = img.convert("L")
         img = img.resize((img.width * 2, img.height * 2))
+        img = ImageEnhance.Contrast(img).enhance(2.0)
         img = img.filter(ImageFilter.SHARPEN)
-        # --- ここから追加: 二値化 ---
         import numpy as np
 
         img_np = np.array(img)
-        # Otsuのしきい値で二値化
-        import cv2
-
+        img_np = cv2.medianBlur(img_np, 3)
         _, img_np = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         img = Image.fromarray(img_np)
-        # --- ここまで追加 ---
-        text = pytesseract.image_to_string(img, lang="jpn")
+        text = pytesseract.image_to_string(img, lang="jpn", config="--oem 1 --psm 6")
         print(f"📝 OCR画像({image_path})結果:\n{text.strip()}")
-        # 文字化け判定: 文字数が少ない・記号が多い場合は警告
         if not text.strip() or sum(c.isalnum() for c in text) < 3:
             print(f"⚠️ OCR画像({image_path})で文字化けまたは認識失敗の可能性")
         return text.strip()

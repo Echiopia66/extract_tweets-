@@ -1,0 +1,9 @@
+selenium
+pillow
+opencv-python
+pytesseract
+notion-client
+beautifulsoup4
+requests
+
+# pip install -r requirements.txtで実行
