@@ -384,18 +384,21 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     block = next(b for b in tweet_blocks if b["id"] == current_id)
 
-    # --- 親投稿のvideoタグだけを抽出（引用元のvideoを除外） ---
+    # まず、親article内のすべてのvideoを取得
     all_videos = block["article"].find_elements(By.XPATH, ".//video")
+    # 親article内のネストされたarticle（引用元）のvideoをすべて取得
     quote_articles = block["article"].find_elements(
         By.XPATH, ".//article[@data-testid='tweet']"
     )
     quote_videos = []
     for qa in quote_articles:
-        quote_videos.extend(qa.find_elements(By.XPATH, ".//video"))
+        if qa != block["article"]:
+            quote_videos.extend(qa.find_elements(By.XPATH, ".//video"))
+    # 親投稿のvideoのみを抽出
+    # --- 親投稿のvideoタグだけを抽出（引用元のvideoを除外） ---
     parent_videos = [
         v
         for v in block["article"].find_elements(By.XPATH, ".//video")
-        # 直近のancestor articleが自分自身（block["article"]）のみ
         if v.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
         == block["article"]
         and len(v.find_elements(By.XPATH, "ancestor::article[@data-testid='tweet']"))
@@ -428,11 +431,12 @@ def extract_thread_from_detail_page(driver, tweet_url):
     else:
         print("🟥 poster属性付きvideoタグなし")
 
-    # 親投稿の画像だけを抽出
+    # --- 親投稿の画像だけを抽出（twimg.com/media画像＋質問箱/card_img画像） ---
     image_urls = [
         img.get_attribute("src")
         for img in block["article"].find_elements(
-            By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
+            By.XPATH,
+            ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
         )
         if img.get_attribute("src")
         and img.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
