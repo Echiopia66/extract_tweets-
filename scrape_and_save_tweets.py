@@ -136,7 +136,6 @@ def ocr_image(image_path):
 
 def extract_self_replies(driver, username):
     replies = []
-    # cellInnerDivごとに「もっと見つける」span/h2が出たらbreak
     cell_divs = driver.find_elements(By.XPATH, "//div[@data-testid='cellInnerDiv']")
 
     def get_transform_y(cell):
@@ -165,12 +164,10 @@ def extract_self_replies(driver, username):
         articles = cell.find_elements(By.XPATH, ".//article[@data-testid='tweet']")
 
         def is_quote_reply(article):
-            # 「引用」や「Quote」などの文言や、引用構造を持つ要素を判定
             quote_els = article.find_elements(
                 By.XPATH,
                 ".//*[contains(text(), '引用')] | .//*[contains(text(), 'Quote')]",
             )
-            # 追加: 引用構造のdivやaria-labelも判定
             quote_struct = article.find_elements(
                 By.XPATH, ".//div[contains(@aria-label, '引用')]"
             )
@@ -186,7 +183,6 @@ def extract_self_replies(driver, username):
                 if handle.replace("@", "") != username:
                     continue
 
-                # 引用RT形式ならスキップ
                 if is_quote_reply(article):
                     print("⚠️ extract_self_replies: 引用RT形式のためスキップ")
                     continue
@@ -197,13 +193,34 @@ def extract_self_replies(driver, username):
                 reply_text = text_el.text.strip() if text_el and text_el.text else ""
 
                 tweet_id = extract_tweet_id(article)
-
                 if not tweet_id:
                     print("⚠️ extract_self_replies: tweet_idが取得できないためスキップ")
                     continue
 
+                # 画像・動画情報も取得
+                images = [
+                    img.get_attribute("src")
+                    for img in article.find_elements(
+                        By.XPATH,
+                        ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
+                    )
+                    if img.get_attribute("src")
+                ]
+                video_posters = [
+                    v.get_attribute("poster")
+                    for v in article.find_elements(By.XPATH, ".//video")
+                    if v.get_attribute("poster")
+                ]
+
                 if reply_text:
-                    replies.append({"id": tweet_id, "text": reply_text})
+                    replies.append(
+                        {
+                            "id": tweet_id,
+                            "text": reply_text,
+                            "images": images,
+                            "video_posters": video_posters,
+                        }
+                    )
             except Exception as e:
                 print(f"⚠️ リプライ抽出エラー: {e}")
                 continue
@@ -213,6 +230,254 @@ def extract_self_replies(driver, username):
 def is_ad_post(text):
     lowered = text.lower()
     return any(k.lower() in lowered for k in AD_KEYWORDS)
+
+
+# def extract_thread_from_detail_page(driver, tweet_url):
+#     print(f"\n🕵️ 投稿アクセス中: {tweet_url}")
+#     driver.get(tweet_url)
+#     time.sleep(3)
+
+#     if (
+#         "Something went wrong" in driver.page_source
+#         or "このページは存在しません" in driver.page_source
+#     ):
+#         print(f"❌ 投稿ページが読み込めませんでした: {tweet_url}")
+#         return []
+
+#     try:
+#         WebDriverWait(driver, 10).until(
+#             EC.presence_of_all_elements_located(
+#                 (By.XPATH, "//article[@data-testid='tweet']")
+#             )
+#         )
+#     except Exception as e:
+#         print(f"⚠️ 投稿記事の取得に失敗: {e}")
+#         return []
+
+#     def get_transform_y(cell):
+#         style = cell.get_attribute("style") or ""
+#         m = re.search(r"translateY\(([\d\.]+)px\)", style)
+#         return float(m.group(1)) if m else 0
+
+#     tweet_blocks = []
+#     current_id = re.sub(r"\D", "", tweet_url.split("/")[-1])
+
+#     cell_divs = driver.find_elements(By.XPATH, "//div[@data-testid='cellInnerDiv']")
+#     print(f"cellInnerDiv数: {len(cell_divs)}")
+#     cell_divs = sorted(cell_divs, key=get_transform_y)
+
+#     for cell in cell_divs:
+#         texts = []
+#         for tag in ["span", "h2"]:
+#             for el in cell.find_elements(By.XPATH, f".//{tag}"):
+#                 t = (
+#                     el.text.strip()
+#                     .replace("\u200b", "")
+#                     .replace("\n", "")
+#                     .replace(" ", "")
+#                 )
+#                 if t:
+#                     texts.append(t)
+#         if any("もっと見つける" in t for t in texts):
+#             print("🔝 もっと見つける以降の投稿を除外")
+#             break
+
+#         articles = cell.find_elements(By.XPATH, ".//article[@data-testid='tweet']")
+#         for i, article in enumerate(articles):
+#             try:
+#                 href_el = article.find_element(
+#                     By.XPATH, ".//a[contains(@href, '/status/')]"
+#                 )
+#                 href = href_el.get_attribute("href")
+#                 match = re.search(r"/status/(\d{10,})", href)
+#                 tweet_id = match.group(1) if match else None
+#                 print(f"🔎 [{i+1}] article探索: href={href} → tweet_id={tweet_id}")
+
+#                 if not tweet_id:
+#                     print(f"🛑 tweet_id抽出失敗 → 除外: href={href}")
+#                     continue
+
+#                 try:
+#                     tweet_div = article.find_element(
+#                         By.XPATH, ".//div[@data-testid='tweetText']"
+#                     )
+#                     parts = []
+#                     for elem in tweet_div.find_elements(By.XPATH, ".//*"):
+#                         if elem.tag_name == "img" and elem.get_attribute("alt"):
+#                             parts.append(elem.get_attribute("alt"))
+#                         elif elem.text:
+#                             parts.append(elem.text)
+#                     text = "".join(parts).strip()
+#                 except:
+#                     text = ""
+
+#                 images = article.find_elements(
+#                     By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
+#                 )
+#                 images_with_src = [img for img in images if img.get_attribute("src")]
+
+#                 video_srcs = [
+#                     v.get_attribute("src")
+#                     for v in article.find_elements(By.XPATH, ".//video")
+#                     if v.get_attribute("src")
+#                 ]
+
+#                 has_video_tag = bool(article.find_elements(By.XPATH, ".//video"))
+#                 has_media = bool(images_with_src or video_srcs or has_video_tag)
+
+#                 if not has_media:
+#                     for src in video_srcs:
+#                         if src.startswith("blob:"):
+#                             has_media = True
+#                             break
+
+#                 if is_reply_structure(
+#                     article, tweet_id=tweet_id, text=text, has_media=has_media
+#                 ):
+#                     continue
+
+#                 time_els = article.find_elements(By.XPATH, ".//time")
+#                 date_str = time_els[0].get_attribute("datetime") if time_els else None
+#                 if not date_str:
+#                     print(f"⚠️ 投稿日時なし → date=None に設定: ID={tweet_id}")
+
+#                 username = ""
+#                 try:
+#                     username_el = article.find_element(
+#                         By.XPATH,
+#                         ".//div[@data-testid='User-Name']//span[contains(text(), '@')]",
+#                     )
+#                     username = username_el.text.replace("@", "").strip()
+#                 except:
+#                     pass
+
+#                 images = [
+#                     img.get_attribute("src")
+#                     for img in article.find_elements(
+#                         By.XPATH,
+#                         ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
+#                     )
+#                     if img.get_attribute("src")
+#                 ]
+
+#                 tweet_blocks.append(
+#                     {
+#                         "article": article,
+#                         "text": text,
+#                         "date": date_str,
+#                         "id": tweet_id,
+#                         "username": username,
+#                         "images": images,
+#                     }
+#                 )
+
+#             except Exception as e:
+#                 print(f"⚠️ article解析エラー: {type(e).__name__} - {str(e)}")
+#                 continue
+
+#     print(f"\n🔍 アクセス元URL: {tweet_url}")
+#     print(f"🔢 アクセス元ID: {current_id}")
+
+#     if not tweet_blocks:
+#         print("⚠️ 有効な投稿ブロックがないためスキップ")
+#         return []
+
+#     tweet_blocks.sort(key=lambda x: int(x["id"]))
+#     for i, block in enumerate(tweet_blocks):
+#         print(
+#             f"  [{i+1}] DOM取得ID: {block['id']} | text先頭: {block['text'].replace(chr(10), ' ')[:15]}"
+#         )
+
+#     valid_blocks = [
+#         b
+#         for b in tweet_blocks
+#         if b.get("username") == EXTRACT_TARGET and not is_ad_post(b["text"])
+#     ]
+#     if not valid_blocks:
+#         print("⚠️ 有効な投稿者一致+非広告の投稿が見つかりません → 除外")
+#         return []
+
+#     parent_id = sorted(valid_blocks, key=lambda x: int(x["id"]))[0]["id"]
+#     if current_id != parent_id:
+#         print(
+#             f"🔝 投稿ID {current_id} は親ID {parent_id} ではないため除外（投稿者一致+非広告で判定）"
+#         )
+#         return []
+
+#     block = next(b for b in tweet_blocks if b["id"] == current_id)
+
+#     # まず、親article内のすべてのvideoを取得
+#     all_videos = block["article"].find_elements(By.XPATH, ".//video")
+#     # 親article内のネストされたarticle（引用元）のvideoをすべて取得
+#     quote_articles = block["article"].find_elements(
+#         By.XPATH, ".//article[@data-testid='tweet']"
+#     )
+#     quote_videos = []
+#     for qa in quote_articles:
+#         if qa != block["article"]:
+#             quote_videos.extend(qa.find_elements(By.XPATH, ".//video"))
+
+#     # --- 親投稿のvideoタグだけを抽出（引用元のvideoを除外） ---
+#     parent_videos = [
+#         v for v in block["article"].find_elements(By.XPATH, "./video | ./div//video")
+#     ]
+
+#     print(
+#         f"🟦 スクショ対象articleのID: {block['id']} | videoタグ数: {len(parent_videos)}"
+#     )
+#     for idx, v in enumerate(parent_videos):
+#         src = v.get_attribute("src")
+#         poster = v.get_attribute("poster")
+#         print(f"　└ parent_video[{idx}] src={src} poster={poster}")
+
+#     poster_paths = []
+#     for idx, v in enumerate(parent_videos):
+#         poster_url = v.get_attribute("poster")
+#         if poster_url:
+#             poster_path = f"video_poster_{current_id}_{idx}.jpg"
+#             try:
+#                 resp = requests.get(poster_url, stream=True)
+#                 with open(poster_path, "wb") as f:
+#                     for chunk in resp.iter_content(1024):
+#                         f.write(chunk)
+#                 print(f"🟩 poster画像保存: {poster_path}")
+#                 poster_paths.append(poster_path)
+#             except Exception as e:
+#                 print(f"❌ poster画像保存失敗: {e}")
+#     else:
+#         print("🟥 poster属性付きvideoタグなし")
+
+#     # --- 親投稿の画像だけを抽出（twimg.com/media画像＋質問箱/card_img画像） ---
+#     image_urls = [
+#         img.get_attribute("src")
+#         for img in block["article"].find_elements(
+#             By.XPATH,
+#             "./img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')] | ./div//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
+#         )
+#         if img.get_attribute("src")
+#     ]
+
+#     print(f"　└ 画像URL:{image_urls}")
+
+#     impressions, retweets, likes, bookmarks, replies = extract_metrics(block["article"])
+
+#     return [
+#         {
+#             "url": tweet_url,
+#             "id": current_id,
+#             "text": block["text"],
+#             "date": block["date"],
+#             "images": image_urls,
+#             "username": block["username"],
+#             "impressions": impressions,
+#             "retweets": retweets,
+#             "likes": likes,
+#             "bookmarks": bookmarks,
+#             "replies": replies,
+#             "article": block["article"],
+#             "video_posters": poster_paths,
+#         }
+#     ]
 
 
 def extract_thread_from_detail_page(driver, tweet_url):
@@ -249,7 +514,10 @@ def extract_thread_from_detail_page(driver, tweet_url):
     print(f"cellInnerDiv数: {len(cell_divs)}")
     cell_divs = sorted(cell_divs, key=get_transform_y)
 
+    found_other_user_reply = False
     for cell in cell_divs:
+        if found_other_user_reply:
+            break  # 他人リプライ検出後は以降のcellもスキップ
         texts = []
         for tag in ["span", "h2"]:
             for el in cell.find_elements(By.XPATH, f".//{tag}"):
@@ -294,30 +562,37 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 except:
                     text = ""
 
-                images = article.find_elements(
-                    By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
-                )
-                images_with_src = [img for img in images if img.get_attribute("src")]
-
-                video_srcs = [
-                    v.get_attribute("src")
-                    for v in article.find_elements(By.XPATH, ".//video")
-                    if v.get_attribute("src")
+                # 画像URLリスト
+                images = [
+                    img.get_attribute("src")
+                    for img in article.find_elements(
+                        By.XPATH,
+                        ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
+                    )
+                    if img.get_attribute("src")
                 ]
 
-                has_video_tag = bool(article.find_elements(By.XPATH, ".//video"))
-                has_media = bool(images_with_src or video_srcs or has_video_tag)
-
-                if not has_media:
-                    for src in video_srcs:
-                        if src.startswith("blob:"):
-                            has_media = True
-                            break
-
-                if is_reply_structure(
-                    article, tweet_id=tweet_id, text=text, has_media=has_media
-                ):
-                    continue
+                # 動画サムネイル
+                parent_videos = [
+                    v for v in article.find_elements(By.XPATH, "./video | ./div//video")
+                ]
+                poster_paths = []
+                for idx, v in enumerate(parent_videos):
+                    poster_url = v.get_attribute("poster")
+                    if poster_url:
+                        poster_path = f"video_poster_{tweet_id}_{idx}.jpg"
+                        try:
+                            resp = requests.get(poster_url, stream=True)
+                            with open(poster_path, "wb") as f:
+                                for chunk in resp.iter_content(1024):
+                                    f.write(chunk)
+                            print(f"🟩 poster画像保存: {poster_path}")
+                            poster_paths.append(poster_path)
+                        except Exception as e:
+                            print(f"❌ poster画像保存失敗: {e}")
+                else:
+                    if not poster_paths:
+                        print("🟥 poster属性付きvideoタグなし")
 
                 time_els = article.find_elements(By.XPATH, ".//time")
                 date_str = time_els[0].get_attribute("datetime") if time_els else None
@@ -334,6 +609,19 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 except:
                     pass
 
+                # --- 親投稿以外で他人リプライが出たら以降すべて排除 ---
+                if i > 0 and username != EXTRACT_TARGET:
+                    print(f"🛑 他人リプライ（{username}）を検出したので以降スキップ")
+                    found_other_user_reply = True
+                    break  # articlesループを抜ける
+
+                if found_other_user_reply:
+                    break  # articlesループを抜ける
+
+                if username != EXTRACT_TARGET:
+                    print(f"🛑 他人の投稿（{username}）はスキップ: {tweet_id}")
+                    continue
+
                 tweet_blocks.append(
                     {
                         "article": article,
@@ -341,12 +629,16 @@ def extract_thread_from_detail_page(driver, tweet_url):
                         "date": date_str,
                         "id": tweet_id,
                         "username": username,
+                        "images": images,
+                        "video_posters": poster_paths,
                     }
                 )
 
             except Exception as e:
                 print(f"⚠️ article解析エラー: {type(e).__name__} - {str(e)}")
                 continue
+        if found_other_user_reply:
+            break  # cellループも抜ける
 
     print(f"\n🔍 アクセス元URL: {tweet_url}")
     print(f"🔢 アクセス元ID: {current_id}")
@@ -379,66 +671,39 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     block = next(b for b in tweet_blocks if b["id"] == current_id)
 
-    # まず、親article内のすべてのvideoを取得
-    all_videos = block["article"].find_elements(By.XPATH, ".//video")
-    # 親article内のネストされたarticle（引用元）のvideoをすべて取得
-    quote_articles = block["article"].find_elements(
-        By.XPATH, ".//article[@data-testid='tweet']"
-    )
-    quote_videos = []
-    for qa in quote_articles:
-        if qa != block["article"]:
-            quote_videos.extend(qa.find_elements(By.XPATH, ".//video"))
-    # 親投稿のvideoのみを抽出
-    # --- 親投稿のvideoタグだけを抽出（引用元のvideoを除外） ---
+    # --- 親投稿のvideoタグだけを抽出 ---
     parent_videos = [
-        v
-        for v in block["article"].find_elements(By.XPATH, ".//video")
-        if v.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
-        == block["article"]
-        and len(v.find_elements(By.XPATH, "ancestor::article[@data-testid='tweet']"))
-        == 1
+        v for v in block["article"].find_elements(By.XPATH, "./video | ./div//video")
     ]
-
-    print(
-        f"🟦 スクショ対象articleのID: {block['id']} | videoタグ数: {len(parent_videos)}"
-    )
+    poster_paths = []
     for idx, v in enumerate(parent_videos):
-        src = v.get_attribute("src")
-        poster = v.get_attribute("poster")
-        print(f"　└ parent_video[{idx}] src={src} poster={poster}")
-
-    poster_path = None
-    if parent_videos:
-        poster_url = parent_videos[0].get_attribute("poster")
+        poster_url = v.get_attribute("poster")
         if poster_url:
-            print(f"🟦 poster画像URL: {poster_url}")
-            # poster画像をダウンロードして保存
-            poster_path = f"video_poster_{current_id}.jpg"
+            poster_path = f"video_poster_{current_id}_{idx}.jpg"
             try:
                 resp = requests.get(poster_url, stream=True)
                 with open(poster_path, "wb") as f:
                     for chunk in resp.iter_content(1024):
                         f.write(chunk)
                 print(f"🟩 poster画像保存: {poster_path}")
+                poster_paths.append(poster_path)
             except Exception as e:
                 print(f"❌ poster画像保存失敗: {e}")
     else:
-        print("🟥 poster属性付きvideoタグなし")
+        if not poster_paths:
+            print("🟥 poster属性付きvideoタグなし")
 
-    # --- 親投稿の画像だけを抽出（twimg.com/media画像＋質問箱/card_img画像） ---
+    # --- 親投稿の画像だけを抽出 ---
     image_urls = [
         img.get_attribute("src")
         for img in block["article"].find_elements(
             By.XPATH,
-            ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
+            "./img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')] | ./div//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
         )
         if img.get_attribute("src")
-        and img.find_element(By.XPATH, "ancestor::article[@data-testid='tweet']")
-        == block["article"]
-        and len(img.find_elements(By.XPATH, "ancestor::article[@data-testid='tweet']"))
-        == 1
     ]
+
+    print(f"　└ 画像URL:{image_urls}")
 
     impressions, retweets, likes, bookmarks, replies = extract_metrics(block["article"])
 
@@ -456,7 +721,7 @@ def extract_thread_from_detail_page(driver, tweet_url):
             "bookmarks": bookmarks,
             "replies": replies,
             "article": block["article"],
-            "video_poster": poster_path,
+            "video_posters": poster_paths,
         }
     ]
 
@@ -464,7 +729,10 @@ def extract_thread_from_detail_page(driver, tweet_url):
 def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
     tweets = []
     seen_ids = set()
-    registered_count = 0  # ✅ 実際に登録対象として成功した件数をカウント
+    registered_count = 0
+
+    def is_question_service_reply(image_urls):
+        return any("twimg.com/card_img" in url for url in image_urls or [])
 
     for i, meta in enumerate(tweet_urls):
         if registered_count >= max_tweets:
@@ -479,22 +747,37 @@ def extract_and_merge_tweets(driver, tweet_urls, max_tweets):
             if not thread:
                 continue
 
-            post = thread[0]  # ✅ 常に1投稿のみ対象とする
-            tweet_id = post.get("id")
+            # 親投稿＋自リプライをすべて取得
+            for idx, post in enumerate(thread):
+                tweet_id = post.get("id")
+                if not tweet_id or tweet_id in seen_ids:
+                    continue
+                if already_registered(tweet_id):
+                    continue
 
-            if not tweet_id or tweet_id in seen_ids:
-                print(f"⚠️ 重複または無効ID → スキップ: {tweet_id}")
-                continue
-            if already_registered(tweet_id):
-                print(f"🚫 登録済み → スキップ: {tweet_id}")
-                continue
-
-            tweets.append(post)
-            seen_ids.add(tweet_id)
-            registered_count += 1
-            print(
-                f"✅ 登録対象として追加: {tweet_id}（現在 {registered_count}/{max_tweets} 件）"
-            )
+                # 親投稿以外（リプライ）はメディア有無で分岐
+                if idx > 0:
+                    has_media = bool(post.get("images") or post.get("video_posters"))
+                    # 画像・動画がない場合でもcard_imgがあればマージしない
+                    if not has_media:
+                        if is_question_service_reply(post.get("images", [])):
+                            # 質問箱系リプライは別投稿として追加
+                            tweets.append(post)
+                            seen_ids.add(tweet_id)
+                            registered_count += 1
+                            print(
+                                f"✅ 質問箱系リプライとして追加: {tweet_id}（現在 {registered_count}/{max_tweets} 件）"
+                            )
+                            continue
+                        # テキストのみリプライは親投稿にマージ
+                        tweets[0]["text"] += "\n\n" + post.get("text", "")
+                        continue
+                tweets.append(post)
+                seen_ids.add(tweet_id)
+                registered_count += 1
+                print(
+                    f"✅ 登録対象として追加: {tweet_id}（現在 {registered_count}/{max_tweets} 件）"
+                )
 
         except Exception as e:
             print(f"⚠️ スレッド処理エラー: {e}")
@@ -779,9 +1062,12 @@ def extract_tweets(driver, extract_target, max_tweets):
                 images = [
                     img.get_attribute("src")
                     for img in article.find_elements(
-                        By.XPATH, ".//img[contains(@src, 'twimg.com/media')]"
+                        By.XPATH,
+                        ".//img[contains(@src, 'twimg.com/media') or contains(@src, 'twimg.com/card_img')]",
                     )
+                    if img.get_attribute("src")
                 ]
+
                 videos = [
                     v.get_attribute("src")
                     for v in article.find_elements(By.XPATH, ".//video")
@@ -891,6 +1177,8 @@ def clean_ocr_text(text):
 
 def upload_to_notion(tweet):
     print(f"📤 Notion登録処理開始: {tweet['id']}")
+    print(f"🖼️ images: {tweet.get('images')}")
+
     if already_registered(tweet["id"]):
         print(f"🚫 スキップ済: {tweet['id']}")
         return
@@ -962,9 +1250,11 @@ def upload_to_notion(tweet):
             print(f"⚠️ 画像ダウンロード失敗: {e}")
 
     # poster画像のOCR
-    poster_path = tweet.get("video_poster")
-    if poster_path:
-        ocr_text = ocr_and_remove_image(poster_path, label="動画サムネイル")
+    poster_paths = tweet.get("video_posters") or []
+    if isinstance(poster_paths, str):
+        poster_paths = [poster_paths]
+    for idx, poster_path in enumerate(poster_paths):
+        ocr_text = ocr_and_remove_image(poster_path, label=f"動画サムネイル{idx+1}")
         if ocr_text:
             ocr_texts.append(ocr_text)
 
@@ -1058,7 +1348,6 @@ def merge_replies_with_driver(driver, tweet):
             )
             replies = []
 
-        # ✅ None対策
         tweet_text = tweet.get("text") or ""
         replies = sorted(
             [r for r in replies if r.get("id") and r.get("text")],
@@ -1069,6 +1358,13 @@ def merge_replies_with_driver(driver, tweet):
         reply_texts = []
 
         for r in replies:
+            # 画像・動画・card_img付きリプライは親にマージしない
+            if r.get("images") or r.get("video_posters"):
+                print(
+                    f"🛑 画像・動画・card_img付きリプライは親にマージしません: {r['id']}"
+                )
+                continue
+
             reply_id = r["id"]
             reply_body = r["text"].strip()
             clean_body = reply_body[:20].replace("\n", " ")
@@ -1443,7 +1739,14 @@ def main():
         tweet_for_print = tweet.copy()
         tweet_for_print.pop("article", None)
         print(json.dumps(tweet_for_print, ensure_ascii=False, indent=2))
-        tweet = merge_replies_with_driver(driver, tweet)
+
+        # 親投稿のみリプライマージ、リプライやメディア付きはそのまま
+        is_reply = False
+        if "parent_id" in tweet:
+            is_reply = tweet["id"] != tweet["parent_id"]
+        # parent_idがない場合は、親投稿とみなす
+        if not is_reply:
+            tweet = merge_replies_with_driver(driver, tweet)
         upload_to_notion(tweet)
 
     driver.quit()
