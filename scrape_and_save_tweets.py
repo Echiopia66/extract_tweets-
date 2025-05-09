@@ -15,7 +15,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    NoSuchElementException,
+)
 from notion_client import Client
 from datetime import datetime
 import shutil
@@ -235,23 +238,29 @@ def is_ad_post(text):
 def extract_thread_from_detail_page(driver, tweet_url):
     print(f"\n🕵️ 投稿アクセス中: {tweet_url}")
     driver.get(tweet_url)
-    time.sleep(3)  # ページの読み込み待ち
+
+    # ページの読み込み待ち時間を調整し、主要な要素が表示されるまで待つ
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_all_elements_located(
+                (By.XPATH, "//article[@data-testid='tweet']")
+            )
+        )
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//article[@data-testid='tweet']//time[@datetime]")
+            )
+        )
+        # print("✅ 記事とタイムスタンプの存在を確認")
+    except Exception as e:
+        print(f"⚠️ 投稿記事またはタイムスタンプの取得に失敗: {e}")
+        return []
 
     if (
         "Something went wrong" in driver.page_source
         or "このページは存在しません" in driver.page_source
     ):
         print(f"❌ 投稿ページが読み込めませんでした: {tweet_url}")
-        return []
-
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located(
-                (By.XPATH, "//article[@data-testid='tweet']")
-            )
-        )
-    except Exception as e:
-        print(f"⚠️ 投稿記事の取得に失敗: {e}")
         return []
 
     def get_transform_y(cell):
@@ -261,6 +270,7 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     tweet_blocks = []
     current_id_from_url = re.sub(r"\D", "", tweet_url.split("/")[-1])
+    # print(f"🆔 current_id_from_url: {current_id_from_url}")
 
     cell_divs = driver.find_elements(By.XPATH, "//div[@data-testid='cellInnerDiv']")
     print(f"cellInnerDiv数: {len(cell_divs)}")
@@ -269,9 +279,7 @@ def extract_thread_from_detail_page(driver, tweet_url):
     found_other_user_reply_in_thread = False
     for cell_idx, cell in enumerate(cell_divs):
         if found_other_user_reply_in_thread:
-            print(
-                f"🛑 スレッド内で他人リプライ検出済みのため、cell {cell_idx + 1} 以降の処理をスキップ"
-            )
+            # print(f"🛑 スレッド内で他人リプライ検出済みのため、cell {cell_idx + 1} 以降の処理をスキップ")
             break
 
         articles_in_cell = cell.find_elements(
@@ -284,20 +292,39 @@ def extract_thread_from_detail_page(driver, tweet_url):
             if found_other_user_reply_in_thread:
                 break
 
-            tweet_id = None  # ループの先頭で初期化
+            tweet_id = None
+            username = ""
             try:
-                href_el = article.find_element(
-                    By.XPATH, ".//a[contains(@href, '/status/')]"
+                # --- Robust Tweet ID Extraction ---
+                time_links = article.find_elements(
+                    By.XPATH, ".//a[.//time[@datetime] and contains(@href, '/status/')]"
                 )
-                href = href_el.get_attribute("href")
-                match = re.search(r"/status/(\d{10,})", href)
-                tweet_id = match.group(1) if match else None
+                if time_links:
+                    href = time_links[0].get_attribute("href")
+                    match = re.search(r"/status/(\d{10,})", href)
+                    if match:
+                        tweet_id = match.group(1)
+
+                if not tweet_id:  # Fallback if time_link method didn't yield ID
+                    all_status_links = article.find_elements(
+                        By.XPATH, ".//a[contains(@href, '/status/')]"
+                    )
+                    if all_status_links:
+                        # Iterate to find the first link that is likely the main article's permalink
+                        # This is a heuristic: often the first one, or one not deep inside a quote structure
+                        # For simplicity, we'll take the first one found if the time_link fails.
+                        href = all_status_links[0].get_attribute("href")
+                        match = re.search(r"/status/(\d{10,})", href)
+                        if match:
+                            tweet_id = match.group(1)
+                # --- End of Tweet ID Extraction ---
 
                 if not tweet_id:
-                    # print("⚠️ articleからtweet_id抽出失敗、スキップ")
+                    # print(f"DEBUG: Failed to extract tweet_id for article {article_idx} in cell {cell_idx}")
                     continue
 
-                username = ""
+                # print(f"DEBUG: Article {article_idx}, Extracted tweet_id: {tweet_id}")
+
                 try:
                     username_el = article.find_element(
                         By.XPATH,
@@ -305,171 +332,175 @@ def extract_thread_from_detail_page(driver, tweet_url):
                     )
                     username = username_el.text.replace("@", "").strip()
                 except:
-                    pass  # ユーザー名が取れない場合もある
+                    pass
+                # print(f"DEBUG: Article {article_idx}, ID: {tweet_id}, Username: {username}")
 
                 if not username:
-                    print(
-                        f"⚠️ ユーザー名が取得できなかった投稿（ID: {tweet_id}）はスキップ。"
-                    )
+                    # print(f"⚠️ ユーザー名が取得できなかった投稿（ID: {tweet_id}）はスキップ。")
                     continue
 
-                # 対象ユーザー以外の投稿は、それがスレッドの起点URLの投稿でなければスキップ
                 if username != EXTRACT_TARGET:
-                    if tweet_id != current_id_from_url:  # 起点URLのIDと比較
-                        print(
-                            f"🛑 他人の投稿（@{username}、ID: {tweet_id}）を検出。以降の取得を停止。"
-                        )
+                    if tweet_id != current_id_from_url:
+                        # print(f"🛑 他人の投稿（@{username}、ID: {tweet_id}）を検出。以降の取得を停止。")
                         found_other_user_reply_in_thread = True
                         break
-                    else:
-                        # 起点投稿が対象ユーザーでない場合は、このスレッド全体を無効にするべき
-                        # このチェックは後段の initial_post_data で行う
-                        print(
-                            f"🔶 起点投稿({current_id_from_url})が他人(@{username})ですが、一度処理を継続します。"
-                        )
+                        # else:
+                        # print(f"🔶 起点投稿({current_id_from_url})が他人(@{username})ですが、一度処理を継続します。")
+                        pass  # Will be checked later by initial_post_data["username"]
 
                 text = ""
                 try:
-                    tweet_div = article.find_element(
+                    # 本文の抽出 (以前の「もっと見る」ロジックは詳細ページには不要なため削除)
+                    tweet_text_element = article.find_element(
                         By.XPATH, ".//div[@data-testid='tweetText']"
                     )
-                    raw_text_content = driver.execute_script(
-                        "return arguments[0].textContent;", tweet_div
+                    # JavaScriptのinnerTextを使用して、表示されているテキストと改行をより正確に取得
+                    text_content = driver.execute_script(
+                        "return arguments[0].innerText;", tweet_text_element
                     )
-                    text = raw_text_content.strip() if raw_text_content else ""
-                except Exception as e_text:
-                    # print(f"⚠️ テキスト抽出エラー (ID: {tweet_id}): {e_text}")
-                    text = ""  # テキストがなくても他の情報は取得試行
+                    text = text_content.strip() if text_content else ""
 
-                # --- 画像収集ロジック修正 ---
+                except NoSuchElementException:
+                    # print(f"DEBUG: tweetText element not found for ID: {tweet_id}")
+                    text = ""  # 要素が見つからない場合は空文字
+                except Exception as e_text:
+                    print(
+                        f"⚠️ 本文抽出エラー (ID: {tweet_id}): {type(e_text).__name__} - {e_text}"
+                    )
+                    text = ""
+
                 images = []
-                # 1. 通常のメディア画像 (tweetPhoto 内)
-                tweet_photo_elements = article.find_elements(
+                all_tweet_photo_imgs = article.find_elements(
                     By.XPATH,
                     ".//div[@data-testid='tweetPhoto']//img[contains(@src, 'twimg.com/media')]",
                 )
-                for img_el in tweet_photo_elements:
+                for img_el in all_tweet_photo_imgs:
                     try:
-                        closest_article_anc = img_el.find_element(
+                        # Check if the image belongs to the current article and not a quoted tweet within
+                        img_ancestor_article = img_el.find_element(
                             By.XPATH, "ancestor::article[@data-testid='tweet'][1]"
                         )
-                        if closest_article_anc == article:
-                            src = img_el.get_attribute("src")
-                            if src and src not in images:
-                                images.append(src)
+                        if (
+                            img_ancestor_article != article
+                        ):  # If the image's ancestor article is not the current one, skip
+                            continue
+                        # Further check: if the image is inside a div with role="link", it's likely part of a quote/card
+                        img_el.find_element(By.XPATH, "ancestor::div[@role='link']")
+                        continue  # Skip if it's inside a linkable quote/card structure
+                    except NoSuchElementException:
+                        # This means it's NOT inside a role="link" div, so it's a direct image of the current article
+                        pass
                     except StaleElementReferenceException:
-                        print(
-                            f"⚠️ 画像(media)要素チェック中にStaleElement (ID: {tweet_id})"
-                        )
+                        # print(f"⚠️ Stale element while checking image ancestor for ID: {tweet_id}")
                         continue
-                    except Exception:
-                        pass  # その他のエラーは無視
+                    except Exception:  # Other exceptions during checks
+                        # print(f"⚠️ Error checking image ancestor for ID: {tweet_id}")
+                        continue
 
-                # 2. カード画像 (article 内のどこかにある card_img)
-                card_image_elements = article.find_elements(
+                    src = img_el.get_attribute("src")
+                    if src and src not in images:
+                        images.append(src)
+
+                # Extract card images (like summary cards)
+                all_card_imgs = article.find_elements(
                     By.XPATH, ".//img[contains(@src, 'twimg.com/card_img')]"
                 )
-                for img_el in card_image_elements:
+                for img_el in all_card_imgs:
                     try:
-                        closest_article_anc = img_el.find_element(
+                        img_ancestor_article = img_el.find_element(
                             By.XPATH, "ancestor::article[@data-testid='tweet'][1]"
                         )
-                        if closest_article_anc == article:
-                            # この card_img がネストされた引用RTの一部でないことを確認
-                            is_in_quote_rt = False
-                            try:
-                                # card_img の祖先に role="link" があり、その中にさらに article があれば引用RT内のカード
-                                quote_container = img_el.find_element(
-                                    By.XPATH,
-                                    "ancestor::div[@role='link'][.//article[@data-testid='tweet']]",
-                                )
-                                if quote_container:
-                                    is_in_quote_rt = True
-                            except:  # role="link" がなければ引用RT内ではない
-                                pass
-
-                            if not is_in_quote_rt:
-                                src = img_el.get_attribute("src")
-                                if src and src not in images:
-                                    images.append(src)
+                        if img_ancestor_article != article:
+                            continue
+                        # Card images are often within a linkable container, but they are direct media for *this* tweet
+                        # So, unlike tweetPhoto, we don't necessarily skip if inside role="link" if it's the main article's card
+                        # However, if the card_img is part of a *quoted tweet's card*, we should skip.
+                        # This distinction can be hard. For now, if it's a card_img and its ancestor is the current article, take it.
+                        # A more robust check might involve ensuring it's not inside a *nested* article's card.
                     except StaleElementReferenceException:
-                        print(
-                            f"⚠️ 画像(card)要素チェック中にStaleElement (ID: {tweet_id})"
-                        )
+                        # print(f"⚠️ Stale element while checking card_img ancestor for ID: {tweet_id}")
                         continue
                     except Exception:
-                        pass  # その他のエラーは無視
-                # --- 画像収集ロジック修正ここまで ---
+                        # print(f"⚠️ Error checking card_img ancestor for ID: {tweet_id}")
+                        continue
+
+                    src = img_el.get_attribute("src")
+                    if src and src not in images:
+                        images.append(src)
 
                 video_posters = []
-                video_elements_in_article = article.find_elements(
-                    By.XPATH, ".//div[@data-testid='videoPlayer']//video[@poster]"
-                )
-                for v_el in video_elements_in_article:
+                video_xpath_candidates = [
+                    ".//div[@data-testid='videoPlayer']//video[@poster]",
+                    ".//div[@data-testid='videoComponent']//video[@poster]",
+                    ".//video[@poster]",
+                ]
+                all_video_elements = []
+                for xpath_candidate in video_xpath_candidates:
+                    all_video_elements = article.find_elements(
+                        By.XPATH, xpath_candidate
+                    )
+                    if all_video_elements:
+                        break
+
+                for v_el in all_video_elements:
                     try:
-                        closest_article_anc = v_el.find_element(
+                        video_ancestor_article = v_el.find_element(
                             By.XPATH, "ancestor::article[@data-testid='tweet'][1]"
                         )
-                        if closest_article_anc == article:
-                            poster_url = v_el.get_attribute("poster")
-                            if poster_url:
-                                poster_filename = (
-                                    f"video_poster_{tweet_id}_{len(video_posters)}.jpg"
-                                )
-                                temp_poster_dir = "temp_posters"
-                                if not os.path.exists(temp_poster_dir):
-                                    os.makedirs(temp_poster_dir)
-                                poster_path = os.path.join(
-                                    temp_poster_dir, poster_filename
-                                )
-                                try:
-                                    resp = requests.get(
-                                        poster_url, stream=True, timeout=10
-                                    )
-                                    with open(poster_path, "wb") as f:
-                                        for chunk in resp.iter_content(1024):
-                                            f.write(chunk)
-                                    video_posters.append(poster_path)
-                                except Exception as e_poster:
-                                    print(
-                                        f"❌ poster画像保存失敗 (ID: {tweet_id}): {e_poster}"
-                                    )
+                        if video_ancestor_article != article:
+                            continue
+                        v_el.find_element(By.XPATH, "ancestor::div[@role='link']")
+                        continue
+                    except NoSuchElementException:
+                        pass
                     except StaleElementReferenceException:
-                        print(
-                            f"⚠️ 動画ポスター要素チェック中にStaleElement (ID: {tweet_id})"
-                        )
                         continue
                     except Exception:
-                        pass
+                        continue
+
+                    poster_url = v_el.get_attribute("poster")
+                    if poster_url:
+                        poster_filename = (
+                            f"video_poster_{tweet_id}_{len(video_posters)}.jpg"
+                        )
+                        temp_poster_dir = "temp_posters"
+                        if not os.path.exists(temp_poster_dir):
+                            os.makedirs(temp_poster_dir)
+                        poster_path = os.path.join(temp_poster_dir, poster_filename)
+                        try:
+                            resp = requests.get(poster_url, stream=True, timeout=10)
+                            with open(poster_path, "wb") as f:
+                                for chunk in resp.iter_content(1024):
+                                    f.write(chunk)
+                            video_posters.append(poster_path)
+                        except Exception as e_poster:
+                            print(f"❌ poster画像保存失敗 (ID: {tweet_id}): {e_poster}")
 
                 time_els = article.find_elements(By.XPATH, ".//time")
                 date_str = time_els[0].get_attribute("datetime") if time_els else None
 
                 tweet_blocks.append(
                     {
-                        "article_element": article,  # メトリクス抽出用に保持
+                        "article_element": article,
                         "text": text,
                         "date": date_str,
                         "id": tweet_id,
                         "username": username,
-                        "images": images,  # 修正された画像リスト
+                        "images": images,
                         "video_posters": video_posters,
                     }
                 )
+                # print(f"DEBUG: Added to tweet_blocks: id={tweet_id}, user={username}, images: {len(images)}, posters: {len(video_posters)}")
 
             except StaleElementReferenceException:
-                print(
-                    f"⚠️ StaleElementReferenceException発生。article要素が無効になりました。ID: {tweet_id if tweet_id else '不明'}"
-                )
-                break
+                # print(f"⚠️ StaleElementReferenceException in article loop. ID: {tweet_id if tweet_id else '不明'}")
+                break  # Break from inner articles_in_cell loop for this cell
             except Exception as e:
-                print(
-                    f"⚠️ article解析エラー: {type(e).__name__} - {str(e)} (ID: {tweet_id if tweet_id else '不明'})"
-                )
-                continue
+                # print(f"⚠️ article解析エラー (outer): {type(e).__name__} - {str(e)} (ID: {tweet_id if tweet_id else '不明'})")
+                continue  # Continue to next article in cell
 
         if found_other_user_reply_in_thread:
-            break
+            break  # Break from outer cell_divs loop
 
     def remove_temp_posters_from_list(blocks_to_clean):
         for block in blocks_to_clean:
@@ -483,16 +514,21 @@ def extract_thread_from_detail_page(driver, tweet_url):
                         )
 
     if not tweet_blocks:
-        print("⚠️ 有効な投稿ブロックが抽出されませんでした。")
+        print(f"⚠️ 有効な投稿ブロックが抽出されませんでした。 (URL: {tweet_url})")
         return []
 
-    initial_post_data = next(
-        (block for block in tweet_blocks if block["id"] == current_id_from_url), None
-    )
+    initial_post_data = None
+    # print(f"DEBUG: Searching for initial_post_data with id={current_id_from_url} in {len(tweet_blocks)} blocks.")
+    for block in tweet_blocks:
+        # print(f"DEBUG: Checking block for initial_post_data: id={block['id']}, username={block['username']}")
+        if block["id"] == current_id_from_url:
+            initial_post_data = block
+            # print(f"DEBUG: Found initial_post_data: id={initial_post_data['id']}")
+            break
 
     if not initial_post_data:
         print(
-            f"⚠️ URL指定の投稿({current_id_from_url})が抽出されたブロック内に見つかりません。"
+            f"⚠️ URL指定の投稿({current_id_from_url})が抽出されたブロック内に見つかりません。利用可能なブロックID: {[b['id'] for b in tweet_blocks if 'id' in b]}"
         )
         remove_temp_posters_from_list(tweet_blocks)
         return []
@@ -506,13 +542,12 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     final_results = []
     for block_item in tweet_blocks:
-        # article_element は extract_metrics に渡すために必要
-        if "article_element" not in block_item:
-            remove_temp_posters_from_list([block_item])  # ポスターがあれば削除
+        if "article_element" not in block_item:  # Ensure essential key exists
+            remove_temp_posters_from_list([block_item])
             continue
 
         if block_item["username"] != EXTRACT_TARGET:
-            remove_temp_posters_from_list([block_item])
+            remove_temp_posters_from_list([block_item])  # Clean up posters if skipping
             continue
 
         if is_ad_post(block_item["text"]):
@@ -524,35 +559,35 @@ def extract_thread_from_detail_page(driver, tweet_url):
             block_item["article_element"]
         )
 
-        # article_element は final_results には不要なのでここで除くか、
-        # upload_to_notion に渡す直前で除く
         final_results.append(
             {
                 "url": f"https://x.com/{block_item['username']}/status/{block_item['id']}",
                 "id": block_item["id"],
                 "text": block_item["text"],
                 "date": block_item["date"],
-                "images": block_item["images"],  # 修正された画像リスト
+                "images": block_item["images"],  # Should be direct images of this tweet
                 "username": block_item["username"],
                 "impressions": impressions,
                 "retweets": retweets,
                 "likes": likes,
                 "bookmarks": bookmarks,
                 "replies": replies_count,
-                "video_posters": block_item["video_posters"],
+                "video_posters": block_item[
+                    "video_posters"
+                ],  # Should be direct video posters
             }
         )
 
     if not final_results:
         print("⚠️ フィルタリングの結果、有効な投稿が残りませんでした。")
-        # この時点で tweet_blocks に残っているが final_results にないもののポスターを削除
-        final_ids = {item["id"] for item in final_results}
-        for block in tweet_blocks:
-            if block["id"] not in final_ids:
+        # Ensure all posters are cleaned up if no final results
+        final_ids = {item["id"] for item in final_results}  # Will be empty
+        for block in tweet_blocks:  # Iterate original blocks
+            if block["id"] not in final_ids:  # All will not be in final_ids
                 remove_temp_posters_from_list([block])
         return []
 
-    final_results.sort(key=lambda x: int(x["id"]))  # 投稿ID昇順で返す
+    final_results.sort(key=lambda x: int(x["id"]))
     return final_results
 
 
@@ -886,22 +921,53 @@ def is_reply_structure(
         id_display = f"（ID={tweet_id}）" if tweet_id else ""
 
         # 1. 広告投稿の可能性をチェック (is_ad_post は別途定義されている想定)
-        # if is_ad_post(text): # is_reply_structure の責務ではないため、呼び出し元で行う
+        # is_reply_structure の責務ではないため、呼び出し元 (extract_tweets) で行うべき
+        # if is_ad_post(text):
         #     print(f"🚫 is_reply_structure: 広告判定 → 除外 {id_display}")
         #     return True
 
         # 2. 引用ツイートの判定
-        # 引用RTは、自身の <article> 内に、引用元ツイートを表示するための
-        # <div role="link"> (または類似のコンテナ) があり、その中にさらに <article data-testid="tweet"> がネストされる構造が多い。
-        quoted_tweet_articles_in_link_role = article.find_elements(
-            By.XPATH, ".//div[@role='link' and .//article[@data-testid='tweet']]"
-        )
-        is_quote_tweet_structure = len(quoted_tweet_articles_in_link_role) > 0
+        is_quote_tweet_structure = False
+        try:
+            # パターン1: article要素の子孫に、直接の子として「引用」テキストを持つspanと
+            #           「role="link"」を持つdivの両方を持つdivが存在するか。
+            #           (例: 引用詳細.html のような構造)
+            #           normalize-space()で前後の空白を無視して「引用」テキストをマッチさせる。
+            xpath_for_specific_quote_container = ".//div[count(./span[normalize-space(text())='引用']) > 0 and count(./div[@role='link']) > 0]"
+            if (
+                len(article.find_elements(By.XPATH, xpath_for_specific_quote_container))
+                > 0
+            ):
+                is_quote_tweet_structure = True
+                # print(f"DEBUG: is_reply_structure - 引用判定パターン1に一致 {id_display}")
+
+            # パターン2: 従来の判定（ネストされたarticleを持つ引用RT）もチェック
+            # is_quote_tweet_structure がまだFalseの場合のみ実行
+            if not is_quote_tweet_structure:
+                # 引用RTは、自身の <article> 内に、引用元ツイートを表示するための
+                # <div role="link"> (または類似のコンテナ) があり、その中にさらに <article data-testid="tweet"> がネストされる構造が多い。
+                quoted_tweet_articles_in_link_role = article.find_elements(
+                    By.XPATH,
+                    ".//div[@role='link' and .//article[@data-testid='tweet']]",
+                )
+                if len(quoted_tweet_articles_in_link_role) > 0:
+                    is_quote_tweet_structure = True
+                    # print(f"DEBUG: is_reply_structure - 引用判定パターン2に一致 {id_display}")
+
+        except Exception as e_quote_check:
+            print(
+                f"⚠️ is_reply_structure: 引用判定中のエラー {id_display} → {type(e_quote_check).__name__}: {e_quote_check}"
+            )
+            is_quote_tweet_structure = (
+                False  # エラー時は安全策として引用RTではないとみなす
+            )
 
         if is_quote_tweet_structure:
             text_length = len(text.strip()) if text else 0
 
             # 引用RT本体が持つメディアの判定
+            # image_urls や video_poster_urls は、この is_reply_structure を呼び出す
+            # extract_tweets 関数内で、現在の article に直接属するものとして抽出・渡される想定
             has_own_images = bool(
                 image_urls and any("twimg.com/media" in url for url in image_urls)
             )
@@ -917,13 +983,14 @@ def is_reply_structure(
             # ルール: 「50文字以上」かつ「メディアがない」引用RTは取得しない (スキップする)
             if text_length >= 50 and not quote_rt_has_own_media:
                 print(
-                    f"🛑 is_reply_structure: 引用RT（50文字以上 かつ 本体メディアなし）→ 除外 {id_display} | 長さ={text_length}"
+                    f"🛑 is_reply_structure: 引用RT（50文字以上 かつ 本体メディアなし）→ 除外 {id_display} | 長さ={text_length}, 本体メディア={quote_rt_has_own_media}"
                 )
                 return True  # スキップする (取得しない)
             else:
                 # 上記のスキップ条件に該当しない引用RTは、このフィルターでは取得対象とする
+                # (例: 50文字未満の引用RT、またはメディアを持つ引用RT)
                 print(
-                    f"✅ is_reply_structure: 引用RT（上記除外条件に該当せず）→ 親投稿として許可 {id_display} | 長さ={text_length} | 本体メディアあり={quote_rt_has_own_media}"
+                    f"✅ is_reply_structure: 引用RT（上記除外条件に該当せず）→ 親投稿として許可 {id_display} | 長さ={text_length}, 本体メディア={quote_rt_has_own_media}"
                 )
                 return False  # スキップしない (取得する)
 
@@ -933,49 +1000,69 @@ def is_reply_structure(
 
         # 返信先表示の確認 (より確実なリプライ判定)
         # XPathを調整して、article直下の要素に限定するか、より具体的な構造を指定する
-        reply_to_indicator = article.find_elements(
-            By.XPATH,
-            ".//div[contains(text(), 'Replying to') or contains(text(), '返信先:') or starts-with(.//span/text(), 'Replying to') or starts-with(.//span/text(), '返信先:')]",
-        )
-        if reply_to_indicator:
-            # さらに、その返信先表示が実際に表示されているか（非表示スタイルでないか）を確認することも検討
-            is_indicator_visible = False
-            for indicator_el in reply_to_indicator:
-                try:
-                    if indicator_el.is_displayed():
+        # "Replying to" や "返信先:" のテキストを持つ要素を探す
+        # より具体的に、ユーザー名表示(@...)の兄弟要素や親要素にあることが多い
+        reply_to_indicator_xpaths = [
+            ".//div[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",
+            ".//span[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",
+            ".//div[@data-testid='User-Name']/../../../div[1]//span[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",  # ユーザー名表示の上部にある場合
+        ]
+
+        is_indicator_visible = False
+        for xpath in reply_to_indicator_xpaths:
+            try:
+                indicators = article.find_elements(By.XPATH, xpath)
+                for indicator_el in indicators:
+                    if indicator_el.is_displayed():  # 表示されている要素のみを対象
                         is_indicator_visible = True
                         break
-                except StaleElementReferenceException:
-                    # 要素が消えた場合は無視
-                    pass
-            if is_indicator_visible:
+                if is_indicator_visible:
+                    break
+            except StaleElementReferenceException:
+                pass  # 要素が消えた場合は無視
+            except NoSuchElementException:
+                pass  # 要素が見つからない場合は次のXPathへ
+            except Exception as e_reply_indicator:
                 print(
-                    f"💬 is_reply_structure: 返信先表示あり → 通常リプライ判定 {id_display}"
+                    f"⚠️ is_reply_structure: 返信先表示確認中のエラー {id_display} ({xpath}) → {type(e_reply_indicator).__name__}: {e_reply_indicator}"
                 )
-                return True
+                pass
+
+        if is_indicator_visible:
+            print(
+                f"💬 is_reply_structure: 返信先表示あり → 通常リプライ判定 {id_display}"
+            )
+            return True  # 通常リプライとしてスキップ
 
         # ボタンの数による判定 (補助的、または上記で判定できなかった場合のフォールバック)
         # タイムライン上のツイートと詳細ページのツイートでボタン構造が異なる場合があるので注意
         # data-testid を持つ button 要素を数える
-        buttons = article.find_elements(
-            By.XPATH, ".//div[@role='group']//button[@data-testid]"
-        )
-        # タイムライン上では通常4つ (reply, retweet, like, view/bookmark)
-        # リプライの場合、viewがないことがある (3つになる)
-        # 非常に古いツイートや特殊なケースではさらに少ないことも
-        if len(buttons) < 4:  # 閾値は状況に応じて調整
-            print(
-                f"💬 is_reply_structure: ボタン数 {len(buttons)} 個（4未満）→ 通常リプライ判定の可能性 {id_display}"
+        # 引用RTでないことが既に確認されている前提でこのロジックに入る
+        try:
+            buttons = article.find_elements(
+                By.XPATH, ".//div[@role='group']//button[@data-testid]"
             )
-            # これだけでは断定できない場合もあるので、他の要素と組み合わせるか、
-            # これをリプライとみなすかどうかの判断は要件による
-            return True  # ここではボタン数が少なければリプライとみなす
+            # タイムライン上では通常4つ (reply, retweet, like, view/bookmark)
+            # リプライの場合、viewがないことがある (3つになる)
+            # 非常に古いツイートや特殊なケースではさらに少ないことも
+            # 閾値は状況に応じて調整。ここでは3つ以下ならリプライの可能性が高いと判断。
+            # 引用RTでないことは上で判定済みなので、ボタンが少ない場合は通常リプライの可能性。
+            if len(buttons) <= 3:  # 閾値を <= 3 に変更 (4つ未満はリプライの可能性)
+                print(
+                    f"💬 is_reply_structure: ボタン数 {len(buttons)} 個（3個以下）→ 通常リプライ判定の可能性 {id_display}"
+                )
+                return True  # 通常リプライとしてスキップ
+        except Exception as e_button_count:
+            print(
+                f"⚠️ is_reply_structure: ボタン数確認中のエラー {id_display} → {type(e_button_count).__name__}: {e_button_count}"
+            )
+            # エラー時は判定不能なので、安全策として親投稿扱い（Falseを返す）
 
         # 上記のいずれの条件（引用RTの除外、通常リプライ構造）にも該当しない場合は親投稿とみなす
         print(
             f"✅ is_reply_structure: 構造上問題なし（非引用RT、非リプライ）→ 親投稿と判定 {id_display}"
         )
-        return False
+        return False  # 親投稿として取得
 
     except StaleElementReferenceException:
         print(
@@ -984,7 +1071,7 @@ def is_reply_structure(
         return False  # 要素が無効になった場合は、誤って除外しないようにFalseを返す（要件による）
     except Exception as e:
         print(
-            f"⚠️ is_reply_structure: 判定エラー {id_display} → {type(e).__name__}: {e} → 親投稿として扱う（安全策）"
+            f"⚠️ is_reply_structure: 判定エラー {id_display} → {type(e).__name__}: {e}\n{traceback.format_exc()} → 親投稿として扱う（安全策）"
         )
         return False  # その他のエラー時も安全側に倒す
 
