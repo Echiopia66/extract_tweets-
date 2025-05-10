@@ -239,7 +239,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
     print(f"\n🕵️ 投稿アクセス中: {tweet_url}")
     driver.get(tweet_url)
 
-    # ページの読み込み待ち時間を調整し、主要な要素が表示されるまで待つ
     try:
         WebDriverWait(driver, 15).until(
             EC.presence_of_all_elements_located(
@@ -251,7 +250,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 (By.XPATH, "//article[@data-testid='tweet']//time[@datetime]")
             )
         )
-        # print("✅ 記事とタイムスタンプの存在を確認")
     except Exception as e:
         print(f"⚠️ 投稿記事またはタイムスタンプの取得に失敗: {e}")
         return []
@@ -270,7 +268,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
     tweet_blocks = []
     current_id_from_url = re.sub(r"\D", "", tweet_url.split("/")[-1])
-    # print(f"🆔 current_id_from_url: {current_id_from_url}")
 
     cell_divs = driver.find_elements(By.XPATH, "//div[@data-testid='cellInnerDiv']")
     print(f"cellInnerDiv数: {len(cell_divs)}")
@@ -279,7 +276,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
     found_other_user_reply_in_thread = False
     for cell_idx, cell in enumerate(cell_divs):
         if found_other_user_reply_in_thread:
-            # print(f"🛑 スレッド内で他人リプライ検出済みのため、cell {cell_idx + 1} 以降の処理をスキップ")
             break
 
         articles_in_cell = cell.find_elements(
@@ -295,7 +291,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
             tweet_id = None
             username = ""
             try:
-                # --- Robust Tweet ID Extraction ---
                 time_links = article.find_elements(
                     By.XPATH, ".//a[.//time[@datetime] and contains(@href, '/status/')]"
                 )
@@ -305,25 +300,18 @@ def extract_thread_from_detail_page(driver, tweet_url):
                     if match:
                         tweet_id = match.group(1)
 
-                if not tweet_id:  # Fallback if time_link method didn't yield ID
+                if not tweet_id:
                     all_status_links = article.find_elements(
                         By.XPATH, ".//a[contains(@href, '/status/')]"
                     )
                     if all_status_links:
-                        # Iterate to find the first link that is likely the main article's permalink
-                        # This is a heuristic: often the first one, or one not deep inside a quote structure
-                        # For simplicity, we'll take the first one found if the time_link fails.
                         href = all_status_links[0].get_attribute("href")
                         match = re.search(r"/status/(\d{10,})", href)
                         if match:
                             tweet_id = match.group(1)
-                # --- End of Tweet ID Extraction ---
 
                 if not tweet_id:
-                    # print(f"DEBUG: Failed to extract tweet_id for article {article_idx} in cell {cell_idx}")
                     continue
-
-                # print(f"DEBUG: Article {article_idx}, Extracted tweet_id: {tweet_id}")
 
                 try:
                     username_el = article.find_element(
@@ -333,41 +321,47 @@ def extract_thread_from_detail_page(driver, tweet_url):
                     username = username_el.text.replace("@", "").strip()
                 except:
                     pass
-                # print(f"DEBUG: Article {article_idx}, ID: {tweet_id}, Username: {username}")
 
                 if not username:
-                    # print(f"⚠️ ユーザー名が取得できなかった投稿（ID: {tweet_id}）はスキップ。")
                     continue
 
                 if username != EXTRACT_TARGET:
                     if tweet_id != current_id_from_url:
-                        # print(f"🛑 他人の投稿（@{username}、ID: {tweet_id}）を検出。以降の取得を停止。")
                         found_other_user_reply_in_thread = True
                         break
-                        # else:
-                        # print(f"🔶 起点投稿({current_id_from_url})が他人(@{username})ですが、一度処理を継続します。")
-                        pass  # Will be checked later by initial_post_data["username"]
+                    else:
+                        pass
 
                 text = ""
                 try:
-                    # 本文の抽出 (以前の「もっと見る」ロジックは詳細ページには不要なため削除)
                     tweet_text_element = article.find_element(
                         By.XPATH, ".//div[@data-testid='tweetText']"
                     )
-                    # JavaScriptのinnerTextを使用して、表示されているテキストと改行をより正確に取得
                     text_content = driver.execute_script(
                         "return arguments[0].innerText;", tweet_text_element
                     )
                     text = text_content.strip() if text_content else ""
-
                 except NoSuchElementException:
-                    # print(f"DEBUG: tweetText element not found for ID: {tweet_id}")
-                    text = ""  # 要素が見つからない場合は空文字
+                    text = ""
                 except Exception as e_text:
                     print(
                         f"⚠️ 本文抽出エラー (ID: {tweet_id}): {type(e_text).__name__} - {e_text}"
                     )
                     text = ""
+
+                is_quote_tweet = False
+                try:
+                    if article.find_elements(
+                        By.XPATH,
+                        ".//div[@role='link' and .//article[@data-testid='tweet']]",
+                    ):
+                        is_quote_tweet = True
+                except NoSuchElementException:
+                    pass
+                except Exception as e_quote_check_detail:
+                    print(
+                        f"⚠️ 詳細ページ引用RT判定中エラー (ID: {tweet_id}): {type(e_quote_check_detail).__name__} - {e_quote_check_detail}"
+                    )
 
                 images = []
                 all_tweet_photo_imgs = article.find_elements(
@@ -376,32 +370,23 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 )
                 for img_el in all_tweet_photo_imgs:
                     try:
-                        # Check if the image belongs to the current article and not a quoted tweet within
                         img_ancestor_article = img_el.find_element(
                             By.XPATH, "ancestor::article[@data-testid='tweet'][1]"
                         )
-                        if (
-                            img_ancestor_article != article
-                        ):  # If the image's ancestor article is not the current one, skip
+                        if img_ancestor_article != article:
                             continue
-                        # Further check: if the image is inside a div with role="link", it's likely part of a quote/card
                         img_el.find_element(By.XPATH, "ancestor::div[@role='link']")
-                        continue  # Skip if it's inside a linkable quote/card structure
+                        continue
                     except NoSuchElementException:
-                        # This means it's NOT inside a role="link" div, so it's a direct image of the current article
                         pass
                     except StaleElementReferenceException:
-                        # print(f"⚠️ Stale element while checking image ancestor for ID: {tweet_id}")
                         continue
-                    except Exception:  # Other exceptions during checks
-                        # print(f"⚠️ Error checking image ancestor for ID: {tweet_id}")
+                    except Exception:
                         continue
-
                     src = img_el.get_attribute("src")
                     if src and src not in images:
                         images.append(src)
 
-                # Extract card images (like summary cards)
                 all_card_imgs = article.find_elements(
                     By.XPATH, ".//img[contains(@src, 'twimg.com/card_img')]"
                 )
@@ -412,18 +397,10 @@ def extract_thread_from_detail_page(driver, tweet_url):
                         )
                         if img_ancestor_article != article:
                             continue
-                        # Card images are often within a linkable container, but they are direct media for *this* tweet
-                        # So, unlike tweetPhoto, we don't necessarily skip if inside role="link" if it's the main article's card
-                        # However, if the card_img is part of a *quoted tweet's card*, we should skip.
-                        # This distinction can be hard. For now, if it's a card_img and its ancestor is the current article, take it.
-                        # A more robust check might involve ensuring it's not inside a *nested* article's card.
                     except StaleElementReferenceException:
-                        # print(f"⚠️ Stale element while checking card_img ancestor for ID: {tweet_id}")
                         continue
                     except Exception:
-                        # print(f"⚠️ Error checking card_img ancestor for ID: {tweet_id}")
                         continue
-
                     src = img_el.get_attribute("src")
                     if src and src not in images:
                         images.append(src)
@@ -457,7 +434,6 @@ def extract_thread_from_detail_page(driver, tweet_url):
                         continue
                     except Exception:
                         continue
-
                     poster_url = v_el.get_attribute("poster")
                     if poster_url:
                         poster_filename = (
@@ -479,6 +455,12 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 time_els = article.find_elements(By.XPATH, ".//time")
                 date_str = time_els[0].get_attribute("datetime") if time_els else None
 
+                text_length = len(text)
+                has_media = bool(images or video_posters)
+                print(
+                    f"DEBUG has_media check: ID {tweet_id}, images: {len(images)}, posters: {len(video_posters)}, has_media: {has_media}"
+                )
+
                 tweet_blocks.append(
                     {
                         "article_element": article,
@@ -488,19 +470,17 @@ def extract_thread_from_detail_page(driver, tweet_url):
                         "username": username,
                         "images": images,
                         "video_posters": video_posters,
+                        "is_quote_tweet": is_quote_tweet,
+                        "text_length": text_length,
+                        "has_media": has_media,
                     }
                 )
-                # print(f"DEBUG: Added to tweet_blocks: id={tweet_id}, user={username}, images: {len(images)}, posters: {len(video_posters)}")
-
             except StaleElementReferenceException:
-                # print(f"⚠️ StaleElementReferenceException in article loop. ID: {tweet_id if tweet_id else '不明'}")
-                break  # Break from inner articles_in_cell loop for this cell
+                break
             except Exception as e:
-                # print(f"⚠️ article解析エラー (outer): {type(e).__name__} - {str(e)} (ID: {tweet_id if tweet_id else '不明'})")
-                continue  # Continue to next article in cell
-
+                continue
         if found_other_user_reply_in_thread:
-            break  # Break from outer cell_divs loop
+            break
 
     def remove_temp_posters_from_list(blocks_to_clean):
         for block in blocks_to_clean:
@@ -508,48 +488,38 @@ def extract_thread_from_detail_page(driver, tweet_url):
                 if os.path.exists(poster_p):
                     try:
                         os.remove(poster_p)
-                    except Exception as e_del:
-                        print(
-                            f"⚠️ 一時ポスター削除失敗 (クリーンアップ): {poster_p}, {e_del}"
-                        )
+                    except Exception:
+                        pass
 
     if not tweet_blocks:
         print(f"⚠️ 有効な投稿ブロックが抽出されませんでした。 (URL: {tweet_url})")
         return []
 
     initial_post_data = None
-    # print(f"DEBUG: Searching for initial_post_data with id={current_id_from_url} in {len(tweet_blocks)} blocks.")
     for block in tweet_blocks:
-        # print(f"DEBUG: Checking block for initial_post_data: id={block['id']}, username={block['username']}")
         if block["id"] == current_id_from_url:
             initial_post_data = block
-            # print(f"DEBUG: Found initial_post_data: id={initial_post_data['id']}")
             break
 
     if not initial_post_data:
         print(
-            f"⚠️ URL指定の投稿({current_id_from_url})が抽出されたブロック内に見つかりません。利用可能なブロックID: {[b['id'] for b in tweet_blocks if 'id' in b]}"
+            f"⚠️ URL指定の投稿({current_id_from_url})が抽出ブロック内に見つかりません。"
         )
         remove_temp_posters_from_list(tweet_blocks)
         return []
 
     if initial_post_data["username"] != EXTRACT_TARGET:
         print(
-            f"🛑 URL指定の投稿({current_id_from_url})のユーザー(@{initial_post_data['username']})が対象({EXTRACT_TARGET})と異なります。このスレッドは無効です。"
+            f"🛑 URL指定の投稿({current_id_from_url})のユーザー(@{initial_post_data['username']})が対象({EXTRACT_TARGET})と異なります。"
         )
         remove_temp_posters_from_list(tweet_blocks)
         return []
 
     final_results = []
     for block_item in tweet_blocks:
-        if "article_element" not in block_item:  # Ensure essential key exists
+        if block_item["username"] != EXTRACT_TARGET:
             remove_temp_posters_from_list([block_item])
             continue
-
-        if block_item["username"] != EXTRACT_TARGET:
-            remove_temp_posters_from_list([block_item])  # Clean up posters if skipping
-            continue
-
         if is_ad_post(block_item["text"]):
             print(f"🚫 広告投稿（ID: {block_item['id']}）のためスキップ。")
             remove_temp_posters_from_list([block_item])
@@ -559,31 +529,26 @@ def extract_thread_from_detail_page(driver, tweet_url):
             block_item["article_element"]
         )
 
-        final_results.append(
+        final_block = block_item.copy()
+        final_block.pop("article_element", None)
+
+        final_block.update(
             {
                 "url": f"https://x.com/{block_item['username']}/status/{block_item['id']}",
-                "id": block_item["id"],
-                "text": block_item["text"],
-                "date": block_item["date"],
-                "images": block_item["images"],  # Should be direct images of this tweet
-                "username": block_item["username"],
                 "impressions": impressions,
                 "retweets": retweets,
                 "likes": likes,
                 "bookmarks": bookmarks,
                 "replies": replies_count,
-                "video_posters": block_item[
-                    "video_posters"
-                ],  # Should be direct video posters
             }
         )
+        final_results.append(final_block)
 
     if not final_results:
         print("⚠️ フィルタリングの結果、有効な投稿が残りませんでした。")
-        # Ensure all posters are cleaned up if no final results
-        final_ids = {item["id"] for item in final_results}  # Will be empty
-        for block in tweet_blocks:  # Iterate original blocks
-            if block["id"] not in final_ids:  # All will not be in final_ids
+        final_ids = {item["id"] for item in final_results}
+        for block in tweet_blocks:
+            if block["id"] not in final_ids:
                 remove_temp_posters_from_list([block])
         return []
 
@@ -593,6 +558,8 @@ def extract_thread_from_detail_page(driver, tweet_url):
 
 def extract_and_merge_tweets(driver, tweet_urls_data, max_tweets_to_register):
     final_tweets_for_notion = []
+    # processed_ids は、主にマージされたリプライや、条件2,3で「途中で」登録が確定した投稿のIDを追跡するために使用。
+    # ループの最後に残る parent_post_candidate や、DB登録済みのものはここには必ずしも入らない。
     processed_ids = set()
     actually_registered_count = 0
 
@@ -600,112 +567,284 @@ def extract_and_merge_tweets(driver, tweet_urls_data, max_tweets_to_register):
         key=lambda x: (
             int(x["id"])
             if isinstance(x, dict) and x.get("id") and x["id"].isdigit()
-            else 0
-        ),
-        reverse=True,
+            else float("inf")
+        )
     )
-
-    def is_media_present_in_post(post_data):
-        # images に card_img も含まれるようになったので、これでOK
-        has_images = bool(post_data.get("images"))
-        has_video_posters = bool(post_data.get("video_posters"))
-        return has_images or has_video_posters
 
     for i, meta in enumerate(tweet_urls_data):
         if actually_registered_count >= max_tweets_to_register:
-            print(f"🎯 Notionへの登録件数が {max_tweets_to_register} に達したため終了")
+            print(
+                f"🎯 Notionへの登録件数が {max_tweets_to_register} に達したためURL処理ループを終了"
+            )
             break
 
         tweet_url = meta["url"] if isinstance(meta, dict) else meta
 
         try:
-            # extract_thread_from_detail_page は、元の投稿と対象ユーザーのリプライを
-            # それぞれ独立した投稿データ(メディア情報含む)のリストとして返す
             thread_posts = extract_thread_from_detail_page(driver, tweet_url)
             if not thread_posts:
                 continue
 
             parent_post_candidate = None
+            current_parent_is_db_registered = (
+                False  # 現在の親候補がDB登録済みかのフラグ
+            )
 
-            # thread_posts は既にID昇順になっているはず
-            for post_in_thread in thread_posts:
+            for post_idx, post_in_thread in enumerate(thread_posts):
                 current_post_id = post_in_thread.get("id")
 
                 if not current_post_id:
                     print("⚠️ IDがない投稿データはスキップ")
                     continue
 
-                if current_post_id in processed_ids:
+                # このイテレーションで処理する投稿が、既に何らかの形で処理済みか確認
+                # (final_tweets_for_notion に入っているか、processed_ids に含まれるか)
+                # ただし、それが現在の parent_post_candidate 自身の場合は、このループの最後で評価されるので除外
+                if any(
+                    ftn_item["id"] == current_post_id
+                    for ftn_item in final_tweets_for_notion
+                ) or (
+                    current_post_id in processed_ids
+                    and (
+                        not parent_post_candidate
+                        or current_post_id != parent_post_candidate.get("id")
+                    )
+                ):
+                    print(
+                        f"DEBUG merge_logic: Post {current_post_id} は既に今回の実行で処理済み(登録リスト/マージ済)のためスキップ"
+                    )
                     continue
 
-                if already_registered(current_post_id):
+                is_current_post_db_registered = already_registered(current_post_id)
+
+                is_current_post_quote = post_in_thread.get("is_quote_tweet", False)
+                current_text_len = post_in_thread.get("text_length", 0)
+                current_has_media = post_in_thread.get("has_media", False)
+
+                parent_id_for_log = (
+                    parent_post_candidate.get("id") if parent_post_candidate else "None"
+                )
+                print(
+                    f"DEBUG merge_logic: Processing Post ID: {current_post_id} (DB: {is_current_post_db_registered}), ParentCand: {parent_id_for_log} (ParentDB: {current_parent_is_db_registered}), Q: {is_current_post_quote}, M: {current_has_media}, Len: {current_text_len}"
+                )
+
+                if parent_post_candidate is None:  # スレッドの最初の有効な投稿
+                    if is_current_post_db_registered:
+                        parent_post_candidate = post_in_thread
+                        current_parent_is_db_registered = True
+                        processed_ids.add(
+                            current_post_id
+                        )  # DB登録済みなので、これ自体は登録しないが、IDは処理済みとする
+                        print(
+                            f"DEBUG merge_logic: Set parent_post_candidate to DB_REGISTERED post: {current_post_id}"
+                        )
+                    elif is_current_post_quote and not (
+                        current_text_len >= 50 and current_has_media
+                    ):  # 条件4
+                        print(
+                            f"ℹ️ スレッド開始候補 {current_post_id} は条件4引用RTのためスキップ"
+                        )
+                        processed_ids.add(current_post_id)
+                        # parent_post_candidate は None のまま次の投稿へ
+                    else:
+                        parent_post_candidate = post_in_thread
+                        current_parent_is_db_registered = False
+                        print(
+                            f"DEBUG merge_logic: Set NEW parent_post_candidate: {current_post_id}"
+                        )
+                    continue  # 次の投稿の処理へ
+
+                # parent_post_candidate が存在する状態
+                if current_post_id == parent_post_candidate.get(
+                    "id"
+                ):  # 自分自身はスキップ
+                    continue
+
+                is_reply_to_parent = post_in_thread.get(
+                    "username"
+                ) == parent_post_candidate.get("username") and int(
+                    post_in_thread.get("id", 0)
+                ) > int(
+                    parent_post_candidate.get("id", 0)
+                )
+
+                if not is_reply_to_parent:
+                    # 前の親候補を評価して登録リストに追加 (DB未登録の場合のみ)
+                    if parent_post_candidate and not current_parent_is_db_registered:
+                        # 条件4 (引用RTで短文orメディアなし) のチェック
+                        temp_is_quote = parent_post_candidate.get(
+                            "is_quote_tweet", False
+                        )
+                        temp_text_len = parent_post_candidate.get("text_length", 0)
+                        temp_has_media = parent_post_candidate.get("has_media", False)
+                        if not (
+                            temp_is_quote
+                            and not (temp_text_len >= 50 and temp_has_media)
+                        ):
+                            if actually_registered_count < max_tweets_to_register:
+                                if not any(
+                                    ftn_item["id"] == parent_post_candidate.get("id")
+                                    for ftn_item in final_tweets_for_notion
+                                ):  # 重複追加防止
+                                    final_tweets_for_notion.append(
+                                        parent_post_candidate
+                                    )
+                                    actually_registered_count += 1
+                                    print(
+                                        f"✅ 親候補(非リプライ分岐)を登録リストへ追加: {parent_post_candidate['id']} ({actually_registered_count}/{max_tweets_to_register})"
+                                    )
+                                    # processed_ids.add(parent_post_candidate["id"]) # final_tweets_for_notion に入ったので不要
+                            else:
+                                print(
+                                    f"🎯 登録上限(非リプライ分岐): 親候補 {parent_post_candidate['id']} スキップ"
+                                )
+                                if actually_registered_count >= max_tweets_to_register:
+                                    break
+                        else:
+                            print(
+                                f"ℹ️ 親候補(非リプライ分岐) {parent_post_candidate['id']} は条件4引用RTのためスキップ"
+                            )
+
+                    # 新しい投稿を新しい親候補として設定
+                    if is_current_post_db_registered:
+                        parent_post_candidate = post_in_thread
+                        current_parent_is_db_registered = True
+                        processed_ids.add(current_post_id)
+                        print(
+                            f"DEBUG merge_logic: Set parent_post_candidate to DB_REGISTERED post (non-reply): {current_post_id}"
+                        )
+                    elif is_current_post_quote and not (
+                        current_text_len >= 50 and current_has_media
+                    ):  # 条件4
+                        print(
+                            f"ℹ️ 新しい親候補(非リプライ分岐) {current_post_id} は条件4引用RTのためスキップ"
+                        )
+                        parent_post_candidate = None  # 親候補リセット
+                        current_parent_is_db_registered = False
+                        processed_ids.add(current_post_id)
+                    else:
+                        parent_post_candidate = post_in_thread
+                        current_parent_is_db_registered = False
+                        print(
+                            f"DEBUG merge_logic: Set NEW parent_post_candidate (non-reply): {current_post_id}"
+                        )
+                    continue
+
+                # --- 以下、リプライの場合の処理 ---
+                if (
+                    is_current_post_db_registered
+                ):  # リプライ自体がDB登録済みならスキップ
+                    print(
+                        f"DEBUG merge_logic: Reply Post {current_post_id} はDB登録済みのためスキップ"
+                    )
                     processed_ids.add(current_post_id)
                     continue
 
-                # is_reply_structure のような判定は extract_tweets で済んでいる想定
-                # ここでは extract_target の投稿のみを扱う
-
-                if parent_post_candidate is None:
-                    # 最初の投稿を親候補とする
-                    parent_post_candidate = post_in_thread
-                else:
-                    # 2つ目以降の投稿はリプライとみなす
-                    # このリプライがメディア(card_img含む)を持つか判定
-                    reply_has_media = is_media_present_in_post(post_in_thread)
-
-                    if reply_has_media:
-                        # メディア付きリプライの場合:
-                        # 1. それまでの親候補を登録
-                        if parent_post_candidate["id"] not in processed_ids:
-                            if actually_registered_count < max_tweets_to_register:
-                                final_tweets_for_notion.append(parent_post_candidate)
+                if is_current_post_quote:  # 条件3または条件4の引用RTリプライ
+                    if current_text_len >= 50 and current_has_media:  # 条件3
+                        print(
+                            f"DEBUG merge_logic: Post {current_post_id} is Condition 3 Quote Reply."
+                        )
+                        if actually_registered_count < max_tweets_to_register:
+                            if not any(
+                                ftn_item["id"] == current_post_id
+                                for ftn_item in final_tweets_for_notion
+                            ):  # 重複追加防止
+                                final_tweets_for_notion.append(post_in_thread)
                                 actually_registered_count += 1
                                 print(
-                                    f"✅ 親投稿を登録リストへ追加(メディアリプライ分離): {parent_post_candidate['id']} ({actually_registered_count}/{max_tweets_to_register})"
+                                    f"✅ 条件3リプライを登録: {current_post_id} ({actually_registered_count}/{max_tweets_to_register})"
                                 )
-                                processed_ids.add(parent_post_candidate["id"])
-                            else:
-                                print(
-                                    f"🎯 登録上限({max_tweets_to_register})のため、親候補 {parent_post_candidate['id']} は登録スキップ(メディアリプライ分離時)"
-                                )
-                                # 上限に達したら以降の処理は不要
-                                break
-
-                        # 2. このメディア付きリプライを新しい親候補とする
+                            # このリプライを新しい親候補とする
+                            parent_post_candidate = post_in_thread
+                            current_parent_is_db_registered = False  # 新規登録したのでDBにはまだない (final_tweets_for_notionに入った)
+                        else:
+                            break
+                    else:  # 条件4
+                        print(
+                            f"DEBUG merge_logic: Post {current_post_id} is Condition 4 Quote Reply. Skipping."
+                        )
+                        processed_ids.add(current_post_id)
+                elif current_has_media:  # 条件2: 画像付きリプライ
+                    print(
+                        f"DEBUG merge_logic: Post {current_post_id} is Condition 2 Media Reply."
+                    )
+                    if actually_registered_count < max_tweets_to_register:
+                        if not any(
+                            ftn_item["id"] == current_post_id
+                            for ftn_item in final_tweets_for_notion
+                        ):  # 重複追加防止
+                            final_tweets_for_notion.append(post_in_thread)
+                            actually_registered_count += 1
+                            print(
+                                f"✅ 条件2リプライを登録: {current_post_id} ({actually_registered_count}/{max_tweets_to_register})"
+                            )
+                        # このリプライを新しい親候補とする
                         parent_post_candidate = post_in_thread
+                        current_parent_is_db_registered = False  # 新規登録したのでDBにはまだない (final_tweets_for_notionに入った)
                     else:
-                        # テキストのみのリプライの場合 → 親候補にマージ
+                        break
+                else:  # 条件1: 文字のみの通常リプライ
+                    print(
+                        f"DEBUG merge_logic: Post {current_post_id} is Condition 1 Text-only Reply."
+                    )
+                    if current_parent_is_db_registered:  # 親がDB登録済み
+                        print(
+                            f"ℹ️ 親({parent_post_candidate.get('id')})がDB登録済みのため、文字のみリプライ {current_post_id} はマージせずスキップ"
+                        )
+                        processed_ids.add(current_post_id)
+                    elif parent_post_candidate:  # 親がDB未登録ならマージ
+                        parent_text_before_merge = parent_post_candidate.get("text", "")
+                        reply_text_to_merge = post_in_thread.get("text", "")
                         parent_post_candidate["text"] = (
-                            parent_post_candidate.get("text", "")
-                            + "\n\n"
-                            + post_in_thread.get("text", "")
+                            parent_text_before_merge + "\n\n" + reply_text_to_merge
                         ).strip()
+                        parent_post_candidate["text_length"] = len(
+                            parent_post_candidate["text"]
+                        )
+                        print(
+                            f"🧵 テキストマージ -> 親: {parent_post_candidate.get('id')}, リプライ: {current_post_id}"
+                        )
                         processed_ids.add(
                             current_post_id
-                        )  # マージされたリプライも処理済み
+                        )  # マージされたリプライは処理済み
 
-            # ループ後、最後に残った親候補を登録リストへ
+                if actually_registered_count >= max_tweets_to_register:
+                    break
+
+            # スレッド内の全投稿処理後、最後に残った親候補を登録リストへ (DB未登録の場合のみ)
             if (
                 parent_post_candidate
-                and parent_post_candidate["id"] not in processed_ids
-            ):
-                if actually_registered_count < max_tweets_to_register:
+                and not current_parent_is_db_registered
+                and not any(
+                    ftn_item["id"] == parent_post_candidate.get("id")
+                    for ftn_item in final_tweets_for_notion
+                )
+                and parent_post_candidate.get("id") not in processed_ids
+            ):  # processed_ids にも入っていないことを確認
+
+                is_final_quote = parent_post_candidate.get("is_quote_tweet", False)
+                final_text_len = parent_post_candidate.get("text_length", 0)
+                final_has_media = parent_post_candidate.get("has_media", False)
+
+                if is_final_quote and not (
+                    final_text_len >= 50 and final_has_media
+                ):  # 条件4
+                    print(
+                        f"ℹ️ 最終親候補 {parent_post_candidate['id']} は条件4の引用RTのため登録スキップ"
+                    )
+                elif actually_registered_count < max_tweets_to_register:
                     final_tweets_for_notion.append(parent_post_candidate)
                     actually_registered_count += 1
                     print(
                         f"✅ 最終親候補を登録リストへ追加: {parent_post_candidate['id']} ({actually_registered_count}/{max_tweets_to_register})"
                     )
-                    processed_ids.add(parent_post_candidate["id"])
                 else:
                     print(
-                        f"🎯 登録上限({max_tweets_to_register})のため、最終親候補 {parent_post_candidate['id']} は登録スキップ"
+                        f"🎯 登録上限のため最終親候補 {parent_post_candidate['id']} スキップ"
                     )
 
-            # 登録上限に達していたら外側のループも抜ける
             if actually_registered_count >= max_tweets_to_register:
-                print(
-                    f"🎯 Notionへの登録件数が {max_tweets_to_register} に達したため、URL処理ループを終了"
-                )
                 break
 
         except Exception as e:
@@ -914,166 +1053,240 @@ def is_reply_structure(
     article,
     tweet_id=None,
     text="",
-    image_urls=None,  # このimage_urlsは呼び出し元(extract_tweets)で収集された、現在のarticleに直接属する画像URL
-    video_poster_urls=None,  # 同様に、現在のarticleに直接属する動画ポスターURL
+    image_urls=None,  # タイムライン上のarticle要素から直接抽出された画像URLのリスト
+    video_poster_urls=None,  # 同様に、動画ポスターURLのリスト
 ):
     try:
         id_display = f"（ID={tweet_id}）" if tweet_id else ""
+        # print(f"DEBUG is_reply_structure: Checking ID {tweet_id}")
 
-        # 1. 広告投稿の可能性をチェック (is_ad_post は別途定義されている想定)
-        # is_reply_structure の責務ではないため、呼び出し元 (extract_tweets) で行うべき
-        # if is_ad_post(text):
-        #     print(f"🚫 is_reply_structure: 広告判定 → 除外 {id_display}")
-        #     return True
+        # --- 0. 記事が非表示でないか確認 ---
+        try:
+            if not article.is_displayed():
+                # print(f"DEBUG (is_reply_structure): Article for ID {tweet_id} is not displayed, skipping as reply.")
+                return True
+        except StaleElementReferenceException:
+            # print(f"DEBUG (is_reply_structure): Stale element checking display status for ID {tweet_id}, assuming reply.")
+            return True
 
-        # 2. 引用ツイートの判定
+        # --- 1. 引用ツイートの判定 ---
         is_quote_tweet_structure = False
         try:
-            # パターン1: article要素の子孫に、直接の子として「引用」テキストを持つspanと
-            #           「role="link"」を持つdivの両方を持つdivが存在するか。
-            #           (例: 引用詳細.html のような構造)
-            #           normalize-space()で前後の空白を無視して「引用」テキストをマッチさせる。
-            xpath_for_specific_quote_container = ".//div[count(./span[normalize-space(text())='引用']) > 0 and count(./div[@role='link']) > 0]"
-            if (
-                len(article.find_elements(By.XPATH, xpath_for_specific_quote_container))
-                > 0
-            ):
+            quoted_articles_inside = article.find_elements(
+                By.XPATH, ".//article[@data-testid='tweet']"
+            )
+            if len(quoted_articles_inside) > 0:
                 is_quote_tweet_structure = True
-                # print(f"DEBUG: is_reply_structure - 引用判定パターン1に一致 {id_display}")
 
-            # パターン2: 従来の判定（ネストされたarticleを持つ引用RT）もチェック
-            # is_quote_tweet_structure がまだFalseの場合のみ実行
             if not is_quote_tweet_structure:
-                # 引用RTは、自身の <article> 内に、引用元ツイートを表示するための
-                # <div role="link"> (または類似のコンテナ) があり、その中にさらに <article data-testid="tweet"> がネストされる構造が多い。
-                quoted_tweet_articles_in_link_role = article.find_elements(
+                quote_indicators = article.find_elements(
                     By.XPATH,
-                    ".//div[@role='link' and .//article[@data-testid='tweet']]",
+                    ".//div[contains(translate(., 'ＱＵＯＴＥＴＷＥＥＴ', 'quotetweet'), 'quotetweet') or contains(@aria-label, '引用') or .//span[text()='引用']]",
                 )
-                if len(quoted_tweet_articles_in_link_role) > 0:
+                if any(el.is_displayed() for el in quote_indicators):
                     is_quote_tweet_structure = True
-                    # print(f"DEBUG: is_reply_structure - 引用判定パターン2に一致 {id_display}")
-
         except Exception as e_quote_check:
             print(
                 f"⚠️ is_reply_structure: 引用判定中のエラー {id_display} → {type(e_quote_check).__name__}: {e_quote_check}"
             )
-            is_quote_tweet_structure = (
-                False  # エラー時は安全策として引用RTではないとみなす
-            )
+            is_quote_tweet_structure = False
 
         if is_quote_tweet_structure:
             text_length = len(text.strip()) if text else 0
-
-            # 引用RT本体が持つメディアの判定
-            # image_urls や video_poster_urls は、この is_reply_structure を呼び出す
-            # extract_tweets 関数内で、現在の article に直接属するものとして抽出・渡される想定
-            has_own_images = bool(
-                image_urls and any("twimg.com/media" in url for url in image_urls)
-            )
-            has_own_video_posters = bool(video_poster_urls)
-            has_own_card_img = bool(
-                image_urls and any("twimg.com/card_img" in url for url in image_urls)
-            )
-
-            quote_rt_has_own_media = (
-                has_own_images or has_own_video_posters or has_own_card_img
-            )
-
-            # ルール: 「50文字以上」かつ「メディアがない」引用RTは取得しない (スキップする)
-            if text_length >= 50 and not quote_rt_has_own_media:
+            has_direct_media = bool(image_urls or video_poster_urls)
+            if text_length < 30 and not has_direct_media:
                 print(
-                    f"🛑 is_reply_structure: 引用RT（50文字以上 かつ 本体メディアなし）→ 除外 {id_display} | 長さ={text_length}, 本体メディア={quote_rt_has_own_media}"
+                    f"🛑 is_reply_structure: 短文かつメディアなし引用RT → 除外 {id_display} | 長さ={text_length}, 本体メディア={has_direct_media}"
                 )
-                return True  # スキップする (取得しない)
+                return True
             else:
-                # 上記のスキップ条件に該当しない引用RTは、このフィルターでは取得対象とする
-                # (例: 50文字未満の引用RT、またはメディアを持つ引用RT)
                 print(
-                    f"✅ is_reply_structure: 引用RT（上記除外条件に該当せず）→ 親投稿として許可 {id_display} | 長さ={text_length}, 本体メディア={quote_rt_has_own_media}"
+                    f"✅ is_reply_structure: 引用RT（上記除外条件に該当せず）→ 親投稿として許可 {id_display} | 長さ={text_length}, 本体メディア={has_direct_media}"
                 )
-                return False  # スキップしない (取得する)
+                return False
 
-        # 3. 通常のリプライ構造の判定
-        #   - 「返信先: @username」のようなテキストが存在するか
-        #   - 投稿アクションボタンの数が少ないか（通常投稿は4つ以上、リプライは少ないことがある）
-
-        # 返信先表示の確認 (より確実なリプライ判定)
-        # XPathを調整して、article直下の要素に限定するか、より具体的な構造を指定する
-        # "Replying to" や "返信先:" のテキストを持つ要素を探す
-        # より具体的に、ユーザー名表示(@...)の兄弟要素や親要素にあることが多い
-        reply_to_indicator_xpaths = [
-            ".//div[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",
-            ".//span[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",
-            ".//div[@data-testid='User-Name']/../../../div[1]//span[starts-with(normalize-space(.), 'Replying to') or starts-with(normalize-space(.), '返信先:')]",  # ユーザー名表示の上部にある場合
-        ]
-
-        is_indicator_visible = False
-        for xpath in reply_to_indicator_xpaths:
-            try:
-                indicators = article.find_elements(By.XPATH, xpath)
-                for indicator_el in indicators:
-                    if indicator_el.is_displayed():  # 表示されている要素のみを対象
-                        is_indicator_visible = True
-                        break
-                if is_indicator_visible:
-                    break
-            except StaleElementReferenceException:
-                pass  # 要素が消えた場合は無視
-            except NoSuchElementException:
-                pass  # 要素が見つからない場合は次のXPathへ
-            except Exception as e_reply_indicator:
-                print(
-                    f"⚠️ is_reply_structure: 返信先表示確認中のエラー {id_display} ({xpath}) → {type(e_reply_indicator).__name__}: {e_reply_indicator}"
-                )
-                pass
-
-        if is_indicator_visible:
-            print(
-                f"💬 is_reply_structure: 返信先表示あり → 通常リプライ判定 {id_display}"
-            )
-            return True  # 通常リプライとしてスキップ
-
-        # ボタンの数による判定 (補助的、または上記で判定できなかった場合のフォールバック)
-        # タイムライン上のツイートと詳細ページのツイートでボタン構造が異なる場合があるので注意
-        # data-testid を持つ button 要素を数える
-        # 引用RTでないことが既に確認されている前提でこのロジックに入る
+        # --- 2. socialContextによるリプライ判定 (優先度高) ---
         try:
-            buttons = article.find_elements(
-                By.XPATH, ".//div[@role='group']//button[@data-testid]"
+            social_context_elements = article.find_elements(
+                By.XPATH, ".//div[@data-testid='socialContext']"
             )
-            # タイムライン上では通常4つ (reply, retweet, like, view/bookmark)
-            # リプライの場合、viewがないことがある (3つになる)
-            # 非常に古いツイートや特殊なケースではさらに少ないことも
-            # 閾値は状況に応じて調整。ここでは3つ以下ならリプライの可能性が高いと判断。
-            # 引用RTでないことは上で判定済みなので、ボタンが少ない場合は通常リプライの可能性。
-            if len(buttons) <= 3:  # 閾値を <= 3 に変更 (4つ未満はリプライの可能性)
+            if not social_context_elements:  # 要素が見つからなかった場合のログ
                 print(
-                    f"💬 is_reply_structure: ボタン数 {len(buttons)} 個（3個以下）→ 通常リプライ判定の可能性 {id_display}"
+                    f"DEBUG is_reply_structure: ID {tweet_id}, socialContext要素が見つかりません。"
                 )
-                return True  # 通常リプライとしてスキップ
+
+            for sc_el in social_context_elements:
+                if sc_el.is_displayed():
+                    sc_text_content = sc_el.text
+                    sc_text_lower = sc_text_content.lower()
+                    # socialContextが見つかった場合、その内容をログに出力
+                    print(
+                        f"DEBUG is_reply_structure: ID {tweet_id}, socialContext表示テキスト: '{sc_text_content}'"
+                    )
+
+                    if (
+                        "replying to" in sc_text_lower
+                        or "返信先:" in sc_text_content
+                        or re.search(r"@\w+\s*に返信", sc_text_content, re.IGNORECASE)
+                        or "replied to" in sc_text_lower
+                    ):
+                        try:
+                            sc_el.find_element(
+                                By.XPATH,
+                                "ancestor::div[@role='link' and .//article[@data-testid='tweet']]",
+                            )
+                            # print(f"DEBUG is_reply_structure: ID {tweet_id}, SocialContextは引用RT内のものでした。")
+                            continue
+                        except NoSuchElementException:
+                            print(
+                                f"💬 is_reply_structure (socialContext): ID {tweet_id} → 通常リプライ判定 (テキスト一致: '{sc_text_content[:30]}...')"
+                            )
+                            return True
+        except StaleElementReferenceException:
+            pass
+        except NoSuchElementException:
+            print(
+                f"DEBUG is_reply_structure: ID {tweet_id}, socialContext要素の検索でNoSuchElement (予期せぬケース)。"
+            )
+            pass
+        except Exception as e_sc_check:
+            print(
+                f"⚠️ is_reply_structure: socialContext確認中のエラー {id_display} → {type(e_sc_check).__name__}: {e_sc_check}"
+            )
+
+        # --- 3. 構造的なリプライインジケータの確認 (左側の縦線など) ---
+        try:
+            # body.html のリプライ構造 (article > div > div > div > div.[r-15zivkp & r-18kxxzh]) を参考
+            # タイムライン上でも同様の構造でリプライ線が描画されることを期待
+            # article要素からの相対パスで、特定階層にあるリプライ線要素を探す
+            # body.htmlの構造: article > div.r-eqz5dr > div.r-16y2uox > div.css-175oi2r > div.r-18u37iz > div (リプライ線)
+            # 最初の数階層のクラス名は変動する可能性があるため、より汎用的に子要素を辿る
+            xpath_for_reply_line = "./div/div/div/div[contains(@class, 'r-15zivkp') and contains(@class, 'r-18kxxzh')]"
+            reply_line_indicators = article.find_elements(
+                By.XPATH, xpath_for_reply_line
+            )
+            if reply_line_indicators:
+                print(
+                    f"DEBUG is_reply_structure: ID {tweet_id}, 構造的リプライインジケータ候補 {len(reply_line_indicators)}件検出 (XPath: {xpath_for_reply_line})"
+                )
+
+            for indicator in reply_line_indicators:
+                if indicator.is_displayed():
+                    # このインジケータが引用RT内のものでないことを確認
+                    try:
+                        indicator.find_element(
+                            By.XPATH,
+                            "ancestor::div[@role='link' and .//article[@data-testid='tweet']]",
+                        )
+                        # 引用RT内のリプライ線なら、この判定ではリプライとしない
+                        # print(f"DEBUG is_reply_structure: ID {tweet_id}, 構造的リプライインジケータは引用RT内のもの")
+                    except NoSuchElementException:
+                        print(
+                            f"💬 is_reply_structure (structural_reply_line_specific): ID {tweet_id} → 通常リプライ判定"
+                        )
+                        return True
+        except StaleElementReferenceException:
+            pass
+        except Exception as e_reply_line_check:
+            print(
+                f"⚠️ is_reply_structure: 構造的リプライ線確認中のエラー {id_display} → {type(e_reply_line_check).__name__}: {e_reply_line_check}"
+            )
+
+        # --- 4. 「返信先: @ユーザー名」というテキストが記事ヘッダー部分に直接表示されているか ---
+        try:
+            base_condition = "starts-with(normalize-space(.), 'Replying to @') or starts-with(normalize-space(.), '返信先: @') or starts-with(normalize-space(.), 'In reply to @')"
+            not_in_quote_condition = (
+                "not(ancestor::div[@role='link' and .//article[@data-testid='tweet']])"
+            )
+            not_in_text_div_condition = "not(self::div[@data-testid='tweetText']) and not(ancestor::div[@data-testid='tweetText'])"
+            xpath_for_div = f".//div[{base_condition} and {not_in_quote_condition} and {not_in_text_div_condition}]"
+            not_in_text_span_condition = "not(ancestor::div[@data-testid='tweetText'])"
+            xpath_for_span = f".//span[{base_condition} and {not_in_quote_condition} and {not_in_text_span_condition}]"
+
+            reply_to_user_text_elements = []
+            elements_div = article.find_elements(By.XPATH, xpath_for_div)
+            if elements_div:
+                reply_to_user_text_elements.extend(elements_div)
+            elements_span = article.find_elements(By.XPATH, xpath_for_span)
+            if elements_span:
+                reply_to_user_text_elements.extend(elements_span)
+
+            if not reply_to_user_text_elements:  # 要素が見つからなかった場合のログ
+                print(
+                    f"DEBUG is_reply_structure: ID {tweet_id}, 返信先テキスト要素が見つかりません。"
+                )
+
+            for el in reply_to_user_text_elements:
+                if el.is_displayed():
+                    el_text_content = ""
+                    try:
+                        el_text_content = el.text
+                    except StaleElementReferenceException:
+                        continue
+
+                    # 返信先テキスト候補が見つかった場合、その内容をログに出力
+                    print(
+                        f"DEBUG is_reply_structure: ID {tweet_id}, 返信先テキスト候補: '{el_text_content}'"
+                    )
+
+                    if "@" in el_text_content:
+                        print(
+                            f"💬 is_reply_structure (reply_to_user_text): ID {tweet_id} → 通常リプライ判定 (テキスト一致: '{el_text_content[:30]}...')"
+                        )
+                        return True
+        except StaleElementReferenceException:
+            pass
+        except Exception as e_indicator:
+            print(
+                f"⚠️ is_reply_structure: 返信先テキスト確認中のエラー {id_display} → {type(e_indicator).__name__}: {e_indicator}"
+            )
+
+        # --- 5. ボタンの数による判定 (フォールバック、優先度低) ---
+        try:
+            action_buttons_group = article.find_elements(
+                By.XPATH, ".//div[@role='group' and count(.//button[@data-testid]) > 0]"
+            )
+            if action_buttons_group:
+                buttons_in_group = action_buttons_group[0].find_elements(
+                    By.XPATH, ".//button[@data-testid]"
+                )
+                # print(f"DEBUG is_reply_structure: ID {tweet_id}, ボタン数: {len(buttons_in_group)}")
+                if 0 < len(buttons_in_group) <= 3:
+                    try:
+                        action_buttons_group[0].find_element(
+                            By.XPATH,
+                            "ancestor::div[@role='link' and .//article[@data-testid='tweet']]",
+                        )
+                    except NoSuchElementException:
+                        print(
+                            f"💬 is_reply_structure (button_count): ID {tweet_id}, Count: {len(buttons_in_group)} (<=3) → 通常リプライ判定の可能性"
+                        )
+                        return True
+            # else:
+            # print(f"DEBUG is_reply_structure: ID {tweet_id}, アクションボタングループが見つかりません。")
+        except StaleElementReferenceException:
+            pass
         except Exception as e_button_count:
             print(
                 f"⚠️ is_reply_structure: ボタン数確認中のエラー {id_display} → {type(e_button_count).__name__}: {e_button_count}"
             )
-            # エラー時は判定不能なので、安全策として親投稿扱い（Falseを返す）
 
-        # 上記のいずれの条件（引用RTの除外、通常リプライ構造）にも該当しない場合は親投稿とみなす
+        # --- 上記のいずれの条件にも該当しない場合は親投稿とみなす ---
         print(
             f"✅ is_reply_structure: 構造上問題なし（非引用RT、非リプライ）→ 親投稿と判定 {id_display}"
         )
-        return False  # 親投稿として取得
+        return False
 
     except StaleElementReferenceException:
         print(
             f"⚠️ is_reply_structure: StaleElementReferenceException発生 {id_display} → 親投稿として扱う（安全策）"
         )
-        return False  # 要素が無効になった場合は、誤って除外しないようにFalseを返す（要件による）
+        return False
     except Exception as e:
         print(
             f"⚠️ is_reply_structure: 判定エラー {id_display} → {type(e).__name__}: {e}\n{traceback.format_exc()} → 親投稿として扱う（安全策）"
         )
-        return False  # その他のエラー時も安全側に倒す
+        return False
 
 
 def has_media_in_html(article_html):
